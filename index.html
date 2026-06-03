@@ -1,1 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>穿山惡龍目標價計算工具</title>
 
+  <style>
+    body {
+      font-family: "Microsoft JhengHei", sans-serif;
+      padding: 20px;
+      background: #f4f4f9;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 520px;
+      margin: auto;
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+
+    .warning {
+      margin-bottom: 20px;
+      padding: 12px;
+      background: #fff3cd;
+      border: 1px solid #ffeeba;
+      color: #856404;
+      border-radius: 6px;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .input-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 16px;
+    }
+
+    button {
+      width: 100%;
+      padding: 13px;
+      border: 0;
+      border-radius: 8px;
+      background: #d9534f;
+      color: white;
+      font-size: 17px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+
+    .result-box {
+      background: #e7f3ff;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      border-left: 5px solid #007bff;
+    }
+
+    .fail-box {
+      background: #fff0f0;
+      border-left-color: #d9534f;
+    }
+
+    .highlight {
+      color: #d9534f;
+      font-weight: bold;
+      font-size: 1.15em;
+    }
+
+    hr {
+      border: 0;
+      border-top: 1px solid #eee;
+      margin: 25px 0;
+    }
+
+    .small {
+      font-size: 13px;
+      color: #666;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h2>穿山惡龍目標價計算工具</h2>
+
+    <div class="warning">
+      ⚠️ 本工具計算結果僅供參考。<br>
+      投資有風險，請自行判斷並自負盈虧。
+    </div>
+
+    <div class="input-group">
+      <label>輸入股號：</label>
+      <input type="text" id="stockNo" placeholder="例如 2330、2317、2454">
+    </div>
+
+    <button id="searchBtn" onclick="autoDragon()">自動抓穿山惡龍</button>
+
+    <div id="messageBox" class="result-box" style="display:none;"></div>
+
+    <hr>
+
+    <div class="input-group">
+      <label>前波穿惡股價低點：</label>
+      <input type="number" id="lowPrice" oninput="calculate()">
+    </div>
+
+    <div class="input-group">
+      <label>前波穿惡股價高點：</label>
+      <input type="number" id="highPrice" oninput="calculate()">
+    </div>
+
+    <div class="result-box">
+      前波股價漲幅：
+      <span id="displayA" class="highlight">0</span> %
+    </div>
+
+    <hr>
+
+    <div class="input-group">
+      <label>這波穿惡低點 X：</label>
+      <input type="number" id="priceX" oninput="calculate()">
+    </div>
+
+    <div class="result-box">
+      穿山惡龍目標價：
+      <span id="finalResult" class="highlight">0</span>
+    </div>
+
+    <div class="result-box">
+      <div>第一次穿惡日期：<span id="crossDate1" class="highlight">-</span></div>
+      <div>第一次穿惡低點：<span id="low1Display" class="highlight">-</span></div>
+      <div>第一波最高點：<span id="high1Display" class="highlight">-</span></div>
+      <div>第一波漲幅：<span id="gainDisplay" class="highlight">-</span>%</div>
+      <div>跌破20MA日期：<span id="breakDate1" class="highlight">-</span></div>
+      <div>最近一次穿惡日期：<span id="crossDate2" class="highlight">-</span></div>
+      <div>最近一次穿惡低點：<span id="low2Display" class="highlight">-</span></div>
+      <div class="small">條件：第一波低點到高點漲幅必須大於 30%</div>
+    </div>
+  </div>
+
+  <script>
+    function calculate() {
+      const low = parseFloat(document.getElementById('lowPrice').value);
+      const high = parseFloat(document.getElementById('highPrice').value);
+      const x = parseFloat(document.getElementById('priceX').value);
+
+      let a = 0;
+
+      if (low > 0 && high > 0) {
+        a = ((high - low) / low) * 100;
+        document.getElementById('displayA').innerText = a.toFixed(2);
+      } else {
+        document.getElementById('displayA').innerText = "0";
+      }
+
+      if (!isNaN(x) && x > 0 && a > 30) {
+        const factor = ((a + 100) / 100 * 0.5) + 1;
+        const result = x * factor;
+
+        document.getElementById('finalResult').innerText =
+          result.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+          });
+      } else {
+        document.getElementById('finalResult').innerText = "未成立";
+      }
+    }
+
+    async function autoDragon() {
+      const stockNo = document.getElementById('stockNo').value.trim();
+      const btn = document.getElementById('searchBtn');
+      const box = document.getElementById('messageBox');
+
+      if (!stockNo) {
+        alert('請輸入股號');
+        return;
+      }
+
+      btn.disabled = true;
+      btn.innerText = '查詢中...';
+      box.style.display = 'block';
+      box.className = 'result-box';
+      box.innerHTML = '正在抓取日K並計算20MA...';
+
+      try {
+        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}`);
+        const data = await res.json();
+
+        if (!data.ok) {
+          box.className = 'result-box fail-box';
+          box.innerHTML = data.message || '查詢失敗';
+          return;
+        }
+
+        document.getElementById('lowPrice').value = data.low1;
+        document.getElementById('highPrice').value = data.high1;
+        document.getElementById('priceX').value = data.low2;
+
+        document.getElementById('crossDate1').innerText = data.crossDate1;
+        document.getElementById('low1Display').innerText = data.low1;
+        document.getElementById('high1Display').innerText = data.high1;
+        document.getElementById('gainDisplay').innerText = data.gainPercent;
+        document.getElementById('breakDate1').innerText = data.breakDate1;
+        document.getElementById('crossDate2').innerText = data.crossDate2;
+        document.getElementById('low2Display').innerText = data.low2;
+
+        box.className = 'result-box';
+        box.innerHTML = `符合穿山惡龍條件，已自動帶入三個價位。`;
+
+        calculate();
+
+      } catch (err) {
+        console.error(err);
+        box.className = 'result-box fail-box';
+        box.innerHTML = '系統錯誤，請稍後再試';
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '自動抓穿山惡龍';
+      }
+    }
+  </script>
+</body>
+</html>
