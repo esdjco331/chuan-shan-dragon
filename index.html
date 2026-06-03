@@ -220,6 +220,7 @@
           return;
         }
 
+        box.innerHTML = `查詢標的：<strong>${data.displayName}</strong><br>符合穿山惡龍條件，已自動帶入三個價位。`;
         document.getElementById('lowPrice').value = data.low1;
         document.getElementById('highPrice').value = data.high1;
         document.getElementById('priceX').value = data.low2;
@@ -233,7 +234,7 @@
         document.getElementById('low2Display').innerText = data.low2;
 
         box.className = 'result-box';
-        box.innerHTML = `符合穿山惡龍條件，已自動帶入三個價位。`;
+        
 
         calculate();
 
