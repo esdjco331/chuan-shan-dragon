@@ -4,105 +4,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>穿山惡龍目標價計算工具</title>
-
   <style>
-    body {
-      font-family: "Microsoft JhengHei", sans-serif;
-      padding: 20px;
-      background: #f4f4f9;
-      line-height: 1.6;
-    }
-
-    .container {
-      max-width: 520px;
-      margin: auto;
-      background: white;
-      padding: 25px;
-      border-radius: 12px;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-    }
-
-    h2 {
-      text-align: center;
-      margin-bottom: 10px;
-    }
-
-    .warning {
-      margin-bottom: 20px;
-      padding: 12px;
-      background: #fff3cd;
-      border: 1px solid #ffeeba;
-      color: #856404;
-      border-radius: 6px;
-      font-size: 14px;
-      text-align: center;
-    }
-
-    .input-group {
-      margin-bottom: 15px;
-    }
-
-    label {
-      display: block;
-      margin-bottom: 5px;
-      font-weight: bold;
-    }
-
-    input {
-      width: 100%;
-      padding: 11px;
-      box-sizing: border-box;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      font-size: 16px;
-    }
-
-    button {
-      width: 100%;
-      padding: 13px;
-      border: 0;
-      border-radius: 8px;
-      background: #d9534f;
-      color: white;
-      font-size: 17px;
-      font-weight: bold;
-      cursor: pointer;
-    }
-
-    button:disabled {
-      background: #999;
-      cursor: not-allowed;
-    }
-
-    .result-box {
-      background: #e7f3ff;
-      padding: 15px;
-      border-radius: 8px;
-      margin-top: 15px;
-      border-left: 5px solid #007bff;
-    }
-
-    .fail-box {
-      background: #fff0f0;
-      border-left-color: #d9534f;
-    }
-
-    .highlight {
-      color: #d9534f;
-      font-weight: bold;
-      font-size: 1.15em;
-    }
-
-    hr {
-      border: 0;
-      border-top: 1px solid #eee;
-      margin: 25px 0;
-    }
-
-    .small {
-      font-size: 13px;
-      color: #666;
-    }
+    body { font-family: "Microsoft JhengHei", sans-serif; padding: 20px; background: #f4f4f9; line-height: 1.6; }
+    .container { max-width: 520px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    h2 { text-align: center; margin-bottom: 10px; }
+    .warning { margin-bottom: 20px; padding: 12px; background: #fff3cd; border: 1px solid #ffeeba; color: #856404; border-radius: 6px; font-size: 14px; text-align: center; }
+    .input-group { margin-bottom: 15px; }
+    label { display: block; margin-bottom: 5px; font-weight: bold; }
+    input { width: 100%; padding: 11px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; }
+    button { width: 100%; padding: 13px; border: 0; border-radius: 8px; background: #d9534f; color: white; font-size: 17px; font-weight: bold; cursor: pointer; }
+    button:disabled { background: #999; cursor: not-allowed; }
+    .result-box { background: #e7f3ff; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 5px solid #007bff; }
+    .fail-box { background: #fff0f0; border-left-color: #d9534f; }
+    .highlight { color: #d9534f; font-weight: bold; font-size: 1.15em; }
+    hr { border: 0; border-top: 1px solid #eee; margin: 25px 0; }
+    .small { font-size: 13px; color: #666; }
   </style>
 </head>
 
@@ -116,8 +32,8 @@
     </div>
 
     <div class="input-group">
-      <label>輸入股號：</label>
-      <input type="text" id="stockNo" placeholder="例如 2330、2317、2454">
+      <label>輸入股號或股名：</label>
+      <input type="text" id="stockNo" placeholder="例如 2330、台積電、3163、波若威">
     </div>
 
     <button id="searchBtn" onclick="autoDragon()">自動抓穿山惡龍</button>
@@ -194,101 +110,89 @@
       }
     }
 
+    function clearOldData() {
+      document.getElementById('lowPrice').value = '';
+      document.getElementById('highPrice').value = '';
+      document.getElementById('priceX').value = '';
+
+      document.getElementById('displayA').innerText = '0';
+      document.getElementById('finalResult').innerText = '0';
+
+      document.getElementById('crossDate1').innerText = '-';
+      document.getElementById('low1Display').innerText = '-';
+      document.getElementById('high1Display').innerText = '-';
+      document.getElementById('gainDisplay').innerText = '-';
+      document.getElementById('breakDate1').innerText = '-';
+      document.getElementById('crossDate2').innerText = '-';
+      document.getElementById('low2Display').innerText = '-';
+    }
+
     async function autoDragon() {
-const stockNo = document.getElementById('stockNo').value.trim();
-const btn = document.getElementById('searchBtn');
-const box = document.getElementById('messageBox');
+      const stockNo = document.getElementById('stockNo').value.trim();
+      const btn = document.getElementById('searchBtn');
+      const box = document.getElementById('messageBox');
 
-if (!stockNo) {
-alert('請輸入股號或股名');
-return;
-}
+      if (!stockNo) {
+        alert('請輸入股號或股名');
+        return;
+      }
 
-btn.disabled = true;
-btn.innerText = '查詢中...';
+      btn.disabled = true;
+      btn.innerText = '查詢中...';
 
-/* ===== 清空舊資料 ===== */
+      clearOldData();
 
-document.getElementById('lowPrice').value = '';
-document.getElementById('highPrice').value = '';
-document.getElementById('priceX').value = '';
+      box.style.display = 'block';
+      box.className = 'result-box';
+      box.innerHTML = '正在抓取日K並計算20MA...';
 
-document.getElementById('displayA').innerText = '0';
-document.getElementById('finalResult').innerText = '0';
+      try {
+        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}`);
+        const data = await res.json();
 
-document.getElementById('crossDate1').innerText = '-';
-document.getElementById('low1Display').innerText = '-';
-document.getElementById('high1Display').innerText = '-';
-document.getElementById('gainDisplay').innerText = '-';
-document.getElementById('breakDate1').innerText = '-';
-document.getElementById('crossDate2').innerText = '-';
-document.getElementById('low2Display').innerText = '-';
+        if (!data.ok) {
+          box.className = 'result-box fail-box';
+          box.innerHTML = data.message || '查詢失敗';
+          return;
+        }
 
-box.style.display = 'block';
-box.className = 'result-box';
-box.innerHTML = '正在抓取日K並計算20MA...';
+        box.className = 'result-box';
+        box.innerHTML =
+          `查詢標的：<strong>${data.displayName}</strong><br>` +
+          `符合穿山惡龍條件，已自動帶入三個價位。`;
 
-try {
+        document.getElementById('lowPrice').value = data.low1;
+        document.getElementById('highPrice').value = data.high1;
+        document.getElementById('priceX').value = data.low2;
 
-```
-const res = await fetch(
-  `/api/dragon?stockNo=${encodeURIComponent(stockNo)}`
-);
+        document.getElementById('crossDate1').innerText = data.crossDate1;
+        document.getElementById('low1Display').innerText = data.low1;
+        document.getElementById('high1Display').innerText = data.high1;
+        document.getElementById('gainDisplay').innerText = data.gainPercent;
+        document.getElementById('breakDate1').innerText = data.breakDate1;
+        document.getElementById('crossDate2').innerText = data.crossDate2;
+        document.getElementById('low2Display').innerText = data.low2;
 
-const data = await res.json();
+        calculate();
 
-if (!data.ok) {
-  box.className = 'result-box fail-box';
-  box.innerHTML = data.message || '查詢失敗';
-  return;
-}
+      } catch (err) {
+        console.error(err);
+        box.className = 'result-box fail-box';
+        box.innerHTML = '系統錯誤，請稍後再試';
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '自動抓穿山惡龍';
 
-box.className = 'result-box';
-box.innerHTML =
-  `查詢標的：<strong>${data.displayName}</strong><br>` +
-  `符合穿山惡龍條件，已自動帶入三個價位。`;
+        document.getElementById('stockNo').focus();
+        document.getElementById('stockNo').select();
+      }
+    }
 
-document.getElementById('lowPrice').value = data.low1;
-document.getElementById('highPrice').value = data.high1;
-document.getElementById('priceX').value = data.low2;
-
-document.getElementById('crossDate1').innerText = data.crossDate1;
-document.getElementById('low1Display').innerText = data.low1;
-document.getElementById('high1Display').innerText = data.high1;
-document.getElementById('gainDisplay').innerText = data.gainPercent;
-document.getElementById('breakDate1').innerText = data.breakDate1;
-document.getElementById('crossDate2').innerText = data.crossDate2;
-document.getElementById('low2Display').innerText = data.low2;
-
-calculate();
-```
-
-} catch (err) {
-
-```
-console.error(err);
-
-box.className = 'result-box fail-box';
-box.innerHTML = '系統錯誤，請稍後再試';
-```
-
-} finally {
-
-```
-btn.disabled = false;
-btn.innerText = '自動抓穿山惡龍';
-
-document.getElementById('stockNo').focus();
-document.getElementById('stockNo').select();
-```
-
-}
-}
-document.getElementById('stockNo').addEventListener('keydown', function(e) {
-if (e.key === 'Enter') {
-autoDragon();
-}
-});
+    document.getElementById('stockNo').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        autoDragon();
+      }
+    });
   </script>
 </body>
 </html>
