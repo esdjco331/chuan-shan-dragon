@@ -28,13 +28,15 @@ export default async function handler(req, res) {
       stockName = await getStockNameByCode(stockNo);
     }
 
+    const displayName = `${stockNo}${stockName ? " " + stockName : ""}`;
+
     if (rows.length < 60) {
       return res.status(200).json({
         ok: false,
         stockNo,
         stockName,
-        displayName: `${stockNo}${stockName ? " " + stockName : ""}`,
-        message: "日K資料不足，可能是股號錯誤、非上市櫃，或資料來源暫時無法取得。"
+        displayName,
+        message: `${displayName} 日K資料不足，可能是股號錯誤、非上市櫃，或資料來源暫時無法取得。`
       });
     }
 
@@ -47,8 +49,8 @@ export default async function handler(req, res) {
         ok: false,
         stockNo,
         stockName,
-        displayName: `${stockNo}${stockName ? " " + stockName : ""}`,
-        message: "找不到足夠的穿惡訊號，至少需要最近一次穿惡與前方一段有效穿惡。"
+        displayName,
+        message: `${displayName} 找不到足夠的穿惡訊號，至少需要最近一次穿惡與前方一段有效穿惡。`
       });
     }
 
@@ -71,8 +73,8 @@ export default async function handler(req, res) {
         ok: false,
         stockNo,
         stockName,
-        displayName: `${stockNo}${stockName ? " " + stockName : ""}`,
-        message: "不符合穿山惡龍條件：最近一次穿惡之前，找不到漲幅大於30%的有效前波。"
+        displayName,
+        message: `${displayName} 不符合穿山惡龍條件：最近一次穿惡之前，找不到漲幅大於30%的有效前波。`
       });
     }
 
@@ -88,7 +90,7 @@ export default async function handler(req, res) {
       ok: true,
       stockNo,
       stockName,
-      displayName: `${stockNo}${stockName ? " " + stockName : ""}`,
+      displayName,
       crossDate1: validWave.crossDate,
       low1: round2(low1),
       high1: round2(high1),
@@ -123,7 +125,8 @@ const STOCK_ALIAS = {
   "國精化": "4722",
   "前鼎": "4908",
   "台半": "5425",
-  "環球晶": "6488"
+  "環球晶": "6488",
+  "波若威": "3163"
 };
 
 async function resolveStock(input) {
@@ -216,6 +219,7 @@ async function getStockList() {
         const code = String(
           item.Code ||
           item.SecuritiesCompanyCode ||
+          item["SecuritiesCompanyCode"] ||
           item["代號"] ||
           item["證券代號"] ||
           ""
@@ -225,6 +229,7 @@ async function getStockList() {
           item.Name ||
           item.CompanyName ||
           item.SecuritiesCompanyName ||
+          item["SecuritiesCompanyName"] ||
           item["名稱"] ||
           item["證券名稱"] ||
           ""
@@ -306,11 +311,14 @@ async function fetchTwseDaily(stockNo) {
 
 async function fetchTpexDaily(stockNo) {
   const all = [];
-  const months = getRecentRocMonths(12);
+  const months = getRecentMonths(12);
 
   for (const ym of months) {
+    const year = ym.slice(0, 4);
+    const month = ym.slice(4, 6);
+
     const url =
-      `https://www.tpex.org.tw/web/stock/aftertrading/daily_trading_info/st43_result.php?l=zh-tw&d=${ym}&stkno=${stockNo}`;
+      `https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=${stockNo}&date=${year}/${month}/01&response=json`;
 
     try {
       const r = await fetch(url, {
@@ -319,9 +327,13 @@ async function fetchTpexDaily(stockNo) {
 
       const json = await r.json();
 
-      if (!json || !Array.isArray(json.aaData)) continue;
+      const data = Array.isArray(json.data)
+        ? json.data
+        : Array.isArray(json.tables?.[0]?.data)
+          ? json.tables[0].data
+          : [];
 
-      for (const item of json.aaData) {
+      for (const item of data) {
         const date = rocToDate(item[0]);
         const open = toNumber(item[3]);
         const high = toNumber(item[4]);
@@ -428,20 +440,6 @@ function getRecentMonths(count) {
   return arr.reverse();
 }
 
-function getRecentRocMonths(count) {
-  const arr = [];
-  const now = new Date();
-
-  for (let i = 0; i < count; i++) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-    const rocYear = d.getFullYear() - 1911;
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    arr.push(`${rocYear}/${m}`);
-  }
-
-  return arr.reverse();
-}
-
 function rocToDate(str) {
   if (!str) return null;
 
@@ -461,7 +459,13 @@ function rocToDate(str) {
 function toNumber(v) {
   if (v === undefined || v === null) return null;
 
-  const n = Number(String(v).replace(/,/g, "").replace("--", "").trim());
+  const n = Number(
+    String(v)
+      .replace(/,/g, "")
+      .replace("--", "")
+      .replace(/X|除權|除息|息|權/g, "")
+      .trim()
+  );
 
   return Number.isFinite(n) ? n : null;
 }
