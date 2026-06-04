@@ -98,29 +98,32 @@ export default async function handler(req, res) {
 
     const latestCross = crosses[crosses.length - 1];
 
-    let validWave = null;
-
-    for (let i = crosses.length - 2; i >= 0; i--) {
-      const wave = buildWave(rows, crosses[i]);
-      if (!wave) continue;
-
-      if (wave.gainPercent > 30) {
-        validWave = wave;
-        break;
-      }
-    }
+    const validWave = buildWave(
+  rows,
+  crosses[crosses.length - 2]
+);
 
     if (!validWave) {
-      return res.status(200).json({
-        ok: false,
-        stockNo,
-        stockName,
-        displayName,
-        market,
-        message: `${displayName} 不符合穿山惡龍條件：最近一次穿惡之前，找不到漲幅大於30%的有效前波。`
-      });
-    }
+  return res.status(200).json({
+    ok: false,
+    stockNo,
+    stockName,
+    displayName,
+    market,
+    message: `${displayName} 找不到最近完成波段。`
+  });
+}
 
+if (validWave.gainPercent < 25) {
+  return res.status(200).json({
+    ok: false,
+    stockNo,
+    stockName,
+    displayName,
+    market,
+    message: `${displayName} 最近完成波段漲幅僅 ${round2(validWave.gainPercent)}%，未達25%。`
+  });
+}
     const low1 = validWave.low1;
     const high1 = validWave.high1;
     const low2 = latestCross.low;
