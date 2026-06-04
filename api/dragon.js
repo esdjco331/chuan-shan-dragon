@@ -311,7 +311,7 @@ async function fetchTwseDaily(stockNo) {
 
 async function fetchTpexDaily(stockNo) {
   const all = [];
-  const months = getRecentMonths(12);
+  const months = getRecentMonths(6);
 
   for (const ym of months) {
     const year = ym.slice(0, 4);
