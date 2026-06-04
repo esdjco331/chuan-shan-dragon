@@ -500,7 +500,7 @@ function normalizeText(str) {
 /* ===== 日K資料：平行抓月份 ===== */
 
 async function fetchTwseDaily(stockNo) {
-  const months = getRecentMonths(12);
+  const months = getRecentMonths(6);
 
   const results = await Promise.all(
     months.map(async ym => {
@@ -540,7 +540,7 @@ async function fetchTwseDaily(stockNo) {
 }
 
 async function fetchTpexDaily(stockNo) {
-  const months = getRecentMonths(12);
+  const months = getRecentMonths(6);
 
   const results = await Promise.all(
     months.map(async ym => {
