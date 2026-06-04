@@ -57,6 +57,11 @@
       font-size: 16px;
     }
 
+    input:disabled {
+      background: #f1f1f1;
+      color: #777;
+    }
+
     button {
       width: 100%;
       padding: 13px;
@@ -90,6 +95,11 @@
     .quote-box {
       background: #fff8e7;
       border-left-color: #f0ad4e;
+    }
+
+    .not-cross-box {
+      background: #fff0f0;
+      border-left-color: #d9534f;
     }
 
     .target-ok {
@@ -161,15 +171,18 @@
     <div class="input-group">
       <label>這波穿惡低點 X：</label>
       <input type="number" id="priceX" oninput="calculate()">
+      <div id="priceXStatus" class="small"></div>
     </div>
 
-    <div class="result-box">
+    <div id="targetBox" class="result-box">
       穿山惡龍目標價：
       <span id="finalResult" class="highlight">0</span>
     </div>
 
     <div class="result-box quote-box">
       <div>目前股價：<span id="currentPriceDisplay" class="highlight">-</span></div>
+      <div>20MA：<span id="ma20Display" class="highlight">-</span></div>
+      <div>20MA狀態：<span id="ma20StatusDisplay" class="highlight">-</span></div>
       <div>當日漲跌：<span id="dayChangeDisplay" class="highlight">-</span></div>
       <div>當日漲幅：<span id="dayChangePercentDisplay" class="highlight">-</span>%</div>
       <div>成交量：<span id="volumeDisplay" class="highlight">-</span> 張</div>
@@ -190,10 +203,13 @@
   </div>
 
   <script>
+    let currentIsAboveMA20 = null;
+
     function calculate() {
       const low = parseFloat(document.getElementById('lowPrice').value);
       const high = parseFloat(document.getElementById('highPrice').value);
       const x = parseFloat(document.getElementById('priceX').value);
+      const targetBox = document.getElementById('targetBox');
 
       let a = 0;
 
@@ -203,6 +219,14 @@
       } else {
         document.getElementById('displayA').innerText = "0";
       }
+
+      if (currentIsAboveMA20 === false) {
+        document.getElementById('finalResult').innerText = "目前尚未穿惡";
+        targetBox.className = 'result-box not-cross-box';
+        return;
+      }
+
+      targetBox.className = 'result-box';
 
       if (!isNaN(x) && x > 0 && a > 25) {
         const factor = ((a + 100) / 100 * 0.5) + 1;
@@ -219,14 +243,21 @@
     }
 
     function clearOldData() {
+      currentIsAboveMA20 = null;
+
       document.getElementById('lowPrice').value = '';
       document.getElementById('highPrice').value = '';
       document.getElementById('priceX').value = '';
+      document.getElementById('priceX').disabled = false;
+      document.getElementById('priceXStatus').innerText = '';
 
       document.getElementById('displayA').innerText = '0';
       document.getElementById('finalResult').innerText = '0';
+      document.getElementById('targetBox').className = 'result-box';
 
       document.getElementById('currentPriceDisplay').innerText = '-';
+      document.getElementById('ma20Display').innerText = '-';
+      document.getElementById('ma20StatusDisplay').innerText = '-';
       document.getElementById('dayChangeDisplay').innerText = '-';
       document.getElementById('dayChangePercentDisplay').innerText = '-';
       document.getElementById('volumeDisplay').innerText = '-';
@@ -266,32 +297,63 @@
         const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}`);
         const data = await res.json();
 
+        currentIsAboveMA20 =
+          data.isAboveMA20 === true
+            ? true
+            : data.isAboveMA20 === false
+              ? false
+              : null;
+
+        showQuoteData(data);
+
         if (!data.ok) {
           box.className = 'result-box fail-box';
           box.innerHTML = data.message || '查詢失敗';
-
-          showQuoteData(data);
+          calculate();
           return;
         }
 
-        box.className = 'result-box';
+        box.className = currentIsAboveMA20 === false
+          ? 'result-box fail-box'
+          : 'result-box';
+
         box.innerHTML =
           `查詢標的：<strong>${data.displayName}</strong><br>` +
-          `符合穿山惡龍條件，已自動帶入三個價位。`;
+          (
+            currentIsAboveMA20 === false
+              ? `目前股價仍在20MA之下，尚未穿惡，因此不顯示這波穿惡低點X與目標價。`
+              : `符合穿山惡龍條件，已自動帶入三個價位。`
+          );
 
         document.getElementById('lowPrice').value = data.low1;
         document.getElementById('highPrice').value = data.high1;
-        document.getElementById('priceX').value = data.low2;
+
+        if (currentIsAboveMA20 === false) {
+          document.getElementById('priceX').value = '';
+          document.getElementById('priceX').disabled = true;
+          document.getElementById('priceXStatus').innerText = '目前尚未穿惡，暫不帶入 X。';
+        } else {
+          document.getElementById('priceX').value = data.low2;
+          document.getElementById('priceX').disabled = false;
+          document.getElementById('priceXStatus').innerText = '';
+        }
 
         document.getElementById('crossDate1').innerText = data.crossDate1 || '-';
         document.getElementById('low1Display').innerText = formatNumber(data.low1);
         document.getElementById('high1Display').innerText = formatNumber(data.high1);
         document.getElementById('gainDisplay').innerText = formatNumber(data.gainPercent);
         document.getElementById('breakDate1').innerText = data.breakDate1 || '-';
-        document.getElementById('crossDate2').innerText = data.crossDate2 || '-';
-        document.getElementById('low2Display').innerText = formatNumber(data.low2);
 
-        showQuoteData(data);
+        document.getElementById('crossDate2').innerText =
+          currentIsAboveMA20 === false
+            ? '目前尚未穿惡'
+            : data.crossDate2 || '-';
+
+        document.getElementById('low2Display').innerText =
+          currentIsAboveMA20 === false
+            ? '目前尚未穿惡'
+            : formatNumber(data.low2);
+
         calculate();
 
       } catch (err) {
@@ -311,6 +373,12 @@
       document.getElementById('currentPriceDisplay').innerText =
         formatNumber(data.currentPrice);
 
+      document.getElementById('ma20Display').innerText =
+        formatNumber(data.latestMA20);
+
+      document.getElementById('ma20StatusDisplay').innerText =
+        data.ma20Status || '-';
+
       document.getElementById('dayChangeDisplay').innerText =
         formatSignedNumber(data.dayChange);
 
@@ -328,7 +396,8 @@
       const reachedEl = document.getElementById('reachedTargetDisplay');
 
       if (data.reachedTarget === null || data.reachedTarget === undefined) {
-        reachedEl.innerText = '-';
+        reachedEl.innerText =
+          data.isAboveMA20 === false ? '尚未穿惡' : '-';
         reachedEl.className = 'highlight';
       } else if (data.reachedTarget) {
         reachedEl.innerText = '已達標';
