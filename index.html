@@ -77,7 +77,7 @@
       <div>跌破20MA日期：<span id="breakDate1" class="highlight">-</span></div>
       <div>最近一次穿惡日期：<span id="crossDate2" class="highlight">-</span></div>
       <div>最近一次穿惡低點：<span id="low2Display" class="highlight">-</span></div>
-      <div class="small">條件：第一波低點到高點漲幅必須大於 30%</div>
+      <div class="small">條件：第一波低點到高點漲幅必須大於 25%</div>
     </div>
   </div>
 
@@ -96,7 +96,7 @@
         document.getElementById('displayA').innerText = "0";
       }
 
-      if (!isNaN(x) && x > 0 && a > 30) {
+      if (!isNaN(x) && x > 0 && a > 25) {
         const factor = ((a + 100) / 100 * 0.5) + 1;
         const result = x * factor;
 
