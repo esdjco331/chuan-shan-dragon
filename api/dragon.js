@@ -102,34 +102,49 @@ export default async function handler(req, res) {
 
     const latestCross = crosses[crosses.length - 1];
 
-    const validWave = buildWave(
-      rows,
-      crosses[crosses.length - 2]
-    );
+const halfYearAgo = new Date();
+halfYearAgo.setMonth(halfYearAgo.getMonth() - 6);
 
-    if (!validWave) {
-      return res.status(200).json({
-        ok: false,
-        stockNo,
-        stockName,
-        displayName,
-        market,
-        ...quote,
-        message: `${displayName} 找不到最近完成波段。`
-      });
-    }
+let validWave = null;
+let checkedWaveCount = 0;
+let bestWave = null;
 
-    if (validWave.gainPercent < 25) {
-      return res.status(200).json({
-        ok: false,
-        stockNo,
-        stockName,
-        displayName,
-        market,
-        ...quote,
-        message: `${displayName} 最近完成波段漲幅僅 ${round2(validWave.gainPercent)}%，未達25%。`
-      });
-    }
+for (let i = crosses.length - 2; i >= 0; i--) {
+  const cross = crosses[i];
+
+  if (new Date(cross.date) < halfYearAgo) {
+    break;
+  }
+
+  const wave = buildWave(rows, cross);
+
+  if (!wave) continue;
+
+  checkedWaveCount++;
+
+  if (!bestWave || wave.gainPercent > bestWave.gainPercent) {
+    bestWave = wave;
+  }
+
+  if (wave.gainPercent > 25) {
+    validWave = wave;
+    break;
+  }
+}
+
+if (!validWave) {
+  return res.status(200).json({
+    ok: false,
+    stockNo,
+    stockName,
+    displayName,
+    market,
+    ...quote,
+    message: bestWave
+      ? `${displayName} 半年內找過 ${checkedWaveCount} 段完成波段，最高漲幅僅 ${round2(bestWave.gainPercent)}%，未達25%。`
+      : `${displayName} 半年內找不到符合條件的完成波段。`
+  });
+}
 
     const low1 = validWave.low1;
     const high1 = validWave.high1;
