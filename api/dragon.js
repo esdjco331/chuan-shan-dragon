@@ -4,8 +4,8 @@ const STOCK_LIST_CACHE = {
   time: 0
 };
 
-const CACHE_TIME = 1000 * 60 * 10; // 10分鐘
-const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時
+const CACHE_TIME = 1000 * 60 * 10;
+const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60;
 
 export default async function handler(req, res) {
   const input = String(req.query.stockNo || "").trim();
@@ -43,6 +43,8 @@ export default async function handler(req, res) {
       market = await detectMarket(stockNo);
     }
 
+    const quote = await getRealtimeQuote(stockNo);
+
     let rows = [];
 
     if (market === "tpex") {
@@ -65,7 +67,7 @@ export default async function handler(req, res) {
     }
 
     if (!stockName) {
-      stockName = await getStockNameByCode(stockNo);
+      stockName = quote.name || await getStockNameByCode(stockNo);
     }
 
     const displayName = `${stockNo}${stockName ? " " + stockName : ""}`;
@@ -77,6 +79,7 @@ export default async function handler(req, res) {
         stockName,
         displayName,
         market,
+        ...quote,
         message: `${displayName} 日K資料不足，可能是股號錯誤、非上市櫃，或資料來源暫時無法取得。`
       });
     }
@@ -92,6 +95,7 @@ export default async function handler(req, res) {
         stockName,
         displayName,
         market,
+        ...quote,
         message: `${displayName} 找不到足夠的穿惡訊號，至少需要最近一次穿惡與前方一段有效穿惡。`
       });
     }
@@ -99,31 +103,34 @@ export default async function handler(req, res) {
     const latestCross = crosses[crosses.length - 1];
 
     const validWave = buildWave(
-  rows,
-  crosses[crosses.length - 2]
-);
+      rows,
+      crosses[crosses.length - 2]
+    );
 
     if (!validWave) {
-  return res.status(200).json({
-    ok: false,
-    stockNo,
-    stockName,
-    displayName,
-    market,
-    message: `${displayName} 找不到最近完成波段。`
-  });
-}
+      return res.status(200).json({
+        ok: false,
+        stockNo,
+        stockName,
+        displayName,
+        market,
+        ...quote,
+        message: `${displayName} 找不到最近完成波段。`
+      });
+    }
 
-if (validWave.gainPercent < 25) {
-  return res.status(200).json({
-    ok: false,
-    stockNo,
-    stockName,
-    displayName,
-    market,
-    message: `${displayName} 最近完成波段漲幅僅 ${round2(validWave.gainPercent)}%，未達25%。`
-  });
-}
+    if (validWave.gainPercent < 25) {
+      return res.status(200).json({
+        ok: false,
+        stockNo,
+        stockName,
+        displayName,
+        market,
+        ...quote,
+        message: `${displayName} 最近完成波段漲幅僅 ${round2(validWave.gainPercent)}%，未達25%。`
+      });
+    }
+
     const low1 = validWave.low1;
     const high1 = validWave.high1;
     const low2 = latestCross.low;
@@ -131,32 +138,63 @@ if (validWave.gainPercent < 25) {
     const gainPercent = ((high1 - low1) / low1) * 100;
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
     const target = low2 * factor;
+    const roundedTarget = round2(target);
+
+    const targetDistancePercent =
+      quote.currentPrice
+        ? round2(((roundedTarget - quote.currentPrice) / quote.currentPrice) * 100)
+        : null;
+
+    const reachedTarget =
+      quote.currentPrice
+        ? quote.currentPrice >= roundedTarget
+        : null;
 
     const debugWaves = crosses.map(cross => buildWave(rows, cross))
-  .filter(Boolean)
-  .map(w => ({
-    crossDate: w.crossDate,
-    low1: round2(w.low1),
-    high1: round2(w.high1),
-    gainPercent: round2(w.gainPercent),
-    breakDate: w.breakDate
-  }));
-    
+      .filter(Boolean)
+      .map(w => ({
+        crossDate: w.crossDate,
+        low1: round2(w.low1),
+        high1: round2(w.high1),
+        gainPercent: round2(w.gainPercent),
+        breakDate: w.breakDate
+      }));
+
     const result = {
       ok: true,
       stockNo,
       stockName,
       displayName,
       market,
+
+      currentPrice: quote.currentPrice,
+      dayChange: quote.dayChange,
+      dayChangePercent: quote.dayChangePercent,
+      volume: quote.volume,
+      volumeUnit: "張",
+
       debugWaves,
+
       crossDate1: validWave.crossDate,
       low1: round2(low1),
       high1: round2(high1),
       gainPercent: round2(gainPercent),
       breakDate1: validWave.breakDate,
+
       crossDate2: latestCross.date,
       low2: round2(low2),
-      target: round2(target),
+
+      target: roundedTarget,
+      targetDistancePercent,
+      reachedTarget,
+
+      targetMessage:
+        reachedTarget === null
+          ? "即時行情不足，無法判斷是否達標"
+          : reachedTarget
+            ? "目前股價已達目標價"
+            : `距離目標價還有 ${targetDistancePercent}%`,
+
       cache: false
     };
 
@@ -173,6 +211,82 @@ if (validWave.gainPercent < 25) {
       message: "系統錯誤：" + err.message
     });
   }
+}
+
+/* ===== 即時行情 ===== */
+
+async function getRealtimeQuote(stockNo) {
+  try {
+    const url =
+      `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?` +
+      `ex_ch=tse_${stockNo}.tw|otc_${stockNo}.tw&json=1&delay=0`;
+
+    const r = await fetch(url, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://mis.twse.com.tw/stock/index.jsp"
+      }
+    });
+
+    const json = await r.json();
+
+    const row = json?.msgArray?.find(item => {
+      return String(item.c || "").trim() === String(stockNo);
+    });
+
+    if (!row) {
+      return emptyQuote();
+    }
+
+    const currentPrice = firstValidNumber(row.z, row.pz, row.o, row.a);
+    const yesterdayClose = firstValidNumber(row.y, row.yz);
+
+    const dayChange =
+      currentPrice && yesterdayClose
+        ? round2(currentPrice - yesterdayClose)
+        : null;
+
+    const dayChangePercent =
+      currentPrice && yesterdayClose
+        ? round2(((currentPrice - yesterdayClose) / yesterdayClose) * 100)
+        : null;
+
+    const volume = toNumber(row.v);
+
+    return {
+      name: String(row.n || "").trim(),
+      currentPrice,
+      dayChange,
+      dayChangePercent,
+      volume
+    };
+
+  } catch (_) {
+    return emptyQuote();
+  }
+}
+
+function emptyQuote() {
+  return {
+    name: "",
+    currentPrice: null,
+    dayChange: null,
+    dayChangePercent: null,
+    volume: null
+  };
+}
+
+function firstValidNumber(...values) {
+  for (const v of values) {
+    if (v === undefined || v === null) continue;
+
+    const first = String(v).split("_")[0].split("|")[0].trim();
+    const n = toNumber(first);
+
+    if (n !== null && n > 0) return n;
+  }
+
+  return null;
 }
 
 /* ===== 股號 / 股名解析 ===== */
@@ -524,14 +638,11 @@ function buildWave(rows, cross) {
 
     if (!r.ma20) continue;
 
-    // 先判斷是否跌破20MA
-    // 跌破那根K棒不納入第一波高點
     if (r.close < r.ma20) {
       breakDate = r.date;
       break;
     }
 
-    // 沒跌破才納入區間最高點
     if (r.high > high1) {
       high1 = r.high;
     }
