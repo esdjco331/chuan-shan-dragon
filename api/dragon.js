@@ -26,9 +26,10 @@ export default async function handler(req, res) {
 
     const stockNo = resolved.stockNo;
     const cacheKey = stockNo;
+    const forceRefresh = req.query.refresh === "1";
     const cached = RESULT_CACHE.get(cacheKey);
 
-    if (cached && Date.now() - cached.time < CACHE_TIME) {
+    if (!forceRefresh && cached && Date.now() - cached.time < CACHE_TIME) {
       return res.status(200).json({
         ...cached.data,
         cache: true
