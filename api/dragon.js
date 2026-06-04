@@ -277,7 +277,7 @@ function normalizeText(str) {
 
 async function fetchTwseDaily(stockNo) {
   const all = [];
-  const months = getRecentMonths(12);
+  const months = getRecentMonths(6);
 
   for (const ym of months) {
     const url =
