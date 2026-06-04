@@ -504,16 +504,21 @@ function buildWave(rows, cross) {
   let high1 = cross.high;
   let breakDate = null;
 
-  for (let i = cross.index; i < rows.length; i++) {
+  for (let i = cross.index + 1; i < rows.length; i++) {
     const r = rows[i];
 
     if (!r.ma20) continue;
 
-    if (r.high > high1) high1 = r.high;
-
-    if (i > cross.index && r.close < r.ma20) {
+    // 先判斷是否跌破20MA
+    // 跌破那根K棒不納入第一波高點
+    if (r.close < r.ma20) {
       breakDate = r.date;
       break;
+    }
+
+    // 沒跌破才納入區間最高點
+    if (r.high > high1) {
+      high1 = r.high;
     }
   }
 
