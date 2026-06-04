@@ -128,6 +128,16 @@ export default async function handler(req, res) {
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
     const target = low2 * factor;
 
+    const debugWaves = crosses.map(cross => buildWave(rows, cross))
+  .filter(Boolean)
+  .map(w => ({
+    crossDate: w.crossDate,
+    low1: round2(w.low1),
+    high1: round2(w.high1),
+    gainPercent: round2(w.gainPercent),
+    breakDate: w.breakDate
+  }));
+    
     const result = {
       ok: true,
       stockNo,
