@@ -4,21 +4,120 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>穿山惡龍目標價計算工具(半年內)</title>
+
   <style>
-    body { font-family: "Microsoft JhengHei", sans-serif; padding: 20px; background: #f4f4f9; line-height: 1.6; }
-    .container { max-width: 520px; margin: auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
-    h2 { text-align: center; margin-bottom: 10px; }
-    .warning { margin-bottom: 20px; padding: 12px; background: #fff3cd; border: 1px solid #ffeeba; color: #856404; border-radius: 6px; font-size: 14px; text-align: center; }
-    .input-group { margin-bottom: 15px; }
-    label { display: block; margin-bottom: 5px; font-weight: bold; }
-    input { width: 100%; padding: 11px; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; }
-    button { width: 100%; padding: 13px; border: 0; border-radius: 8px; background: #d9534f; color: white; font-size: 17px; font-weight: bold; cursor: pointer; }
-    button:disabled { background: #999; cursor: not-allowed; }
-    .result-box { background: #e7f3ff; padding: 15px; border-radius: 8px; margin-top: 15px; border-left: 5px solid #007bff; }
-    .fail-box { background: #fff0f0; border-left-color: #d9534f; }
-    .highlight { color: #d9534f; font-weight: bold; font-size: 1.15em; }
-    hr { border: 0; border-top: 1px solid #eee; margin: 25px 0; }
-    .small { font-size: 13px; color: #666; }
+    body {
+      font-family: "Microsoft JhengHei", sans-serif;
+      padding: 20px;
+      background: #f4f4f9;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 520px;
+      margin: auto;
+      background: white;
+      padding: 25px;
+      border-radius: 12px;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+
+    h2 {
+      text-align: center;
+      margin-bottom: 10px;
+    }
+
+    .warning {
+      margin-bottom: 20px;
+      padding: 12px;
+      background: #fff3cd;
+      border: 1px solid #ffeeba;
+      color: #856404;
+      border-radius: 6px;
+      font-size: 14px;
+      text-align: center;
+    }
+
+    .input-group {
+      margin-bottom: 15px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      font-weight: bold;
+    }
+
+    input {
+      width: 100%;
+      padding: 11px;
+      box-sizing: border-box;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 16px;
+    }
+
+    button {
+      width: 100%;
+      padding: 13px;
+      border: 0;
+      border-radius: 8px;
+      background: #d9534f;
+      color: white;
+      font-size: 17px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      background: #999;
+      cursor: not-allowed;
+    }
+
+    .result-box {
+      background: #e7f3ff;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 15px;
+      border-left: 5px solid #007bff;
+    }
+
+    .fail-box {
+      background: #fff0f0;
+      border-left-color: #d9534f;
+    }
+
+    .quote-box {
+      background: #fff8e7;
+      border-left-color: #f0ad4e;
+    }
+
+    .target-ok {
+      color: #d9534f;
+      font-weight: bold;
+    }
+
+    .target-no {
+      color: #2e8b57;
+      font-weight: bold;
+    }
+
+    .highlight {
+      color: #d9534f;
+      font-weight: bold;
+      font-size: 1.15em;
+    }
+
+    hr {
+      border: 0;
+      border-top: 1px solid #eee;
+      margin: 25px 0;
+    }
+
+    .small {
+      font-size: 13px;
+      color: #666;
+    }
   </style>
 </head>
 
@@ -67,6 +166,15 @@
     <div class="result-box">
       穿山惡龍目標價：
       <span id="finalResult" class="highlight">0</span>
+    </div>
+
+    <div class="result-box quote-box">
+      <div>目前股價：<span id="currentPriceDisplay" class="highlight">-</span></div>
+      <div>當日漲跌：<span id="dayChangeDisplay" class="highlight">-</span></div>
+      <div>當日漲幅：<span id="dayChangePercentDisplay" class="highlight">-</span>%</div>
+      <div>成交量：<span id="volumeDisplay" class="highlight">-</span> 張</div>
+      <div>距離目標價：<span id="targetDistanceDisplay" class="highlight">-</span>%</div>
+      <div>是否達標：<span id="reachedTargetDisplay" class="highlight">-</span></div>
     </div>
 
     <div class="result-box">
@@ -118,6 +226,14 @@
       document.getElementById('displayA').innerText = '0';
       document.getElementById('finalResult').innerText = '0';
 
+      document.getElementById('currentPriceDisplay').innerText = '-';
+      document.getElementById('dayChangeDisplay').innerText = '-';
+      document.getElementById('dayChangePercentDisplay').innerText = '-';
+      document.getElementById('volumeDisplay').innerText = '-';
+      document.getElementById('targetDistanceDisplay').innerText = '-';
+      document.getElementById('reachedTargetDisplay').innerText = '-';
+      document.getElementById('reachedTargetDisplay').className = 'highlight';
+
       document.getElementById('crossDate1').innerText = '-';
       document.getElementById('low1Display').innerText = '-';
       document.getElementById('high1Display').innerText = '-';
@@ -144,15 +260,17 @@
 
       box.style.display = 'block';
       box.className = 'result-box';
-      box.innerHTML = '正在抓取日K並計算20MA...';
+      box.innerHTML = '正在抓取日K、即時行情並計算20MA...';
 
       try {
-        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}`);
+        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}&refresh=1`);
         const data = await res.json();
 
         if (!data.ok) {
           box.className = 'result-box fail-box';
           box.innerHTML = data.message || '查詢失敗';
+
+          showQuoteData(data);
           return;
         }
 
@@ -165,14 +283,15 @@
         document.getElementById('highPrice').value = data.high1;
         document.getElementById('priceX').value = data.low2;
 
-        document.getElementById('crossDate1').innerText = data.crossDate1;
-        document.getElementById('low1Display').innerText = data.low1;
-        document.getElementById('high1Display').innerText = data.high1;
-        document.getElementById('gainDisplay').innerText = data.gainPercent;
-        document.getElementById('breakDate1').innerText = data.breakDate1;
-        document.getElementById('crossDate2').innerText = data.crossDate2;
-        document.getElementById('low2Display').innerText = data.low2;
+        document.getElementById('crossDate1').innerText = data.crossDate1 || '-';
+        document.getElementById('low1Display').innerText = formatNumber(data.low1);
+        document.getElementById('high1Display').innerText = formatNumber(data.high1);
+        document.getElementById('gainDisplay').innerText = formatNumber(data.gainPercent);
+        document.getElementById('breakDate1').innerText = data.breakDate1 || '-';
+        document.getElementById('crossDate2').innerText = data.crossDate2 || '-';
+        document.getElementById('low2Display').innerText = formatNumber(data.low2);
 
+        showQuoteData(data);
         calculate();
 
       } catch (err) {
@@ -186,6 +305,64 @@
         document.getElementById('stockNo').focus();
         document.getElementById('stockNo').select();
       }
+    }
+
+    function showQuoteData(data) {
+      document.getElementById('currentPriceDisplay').innerText =
+        formatNumber(data.currentPrice);
+
+      document.getElementById('dayChangeDisplay').innerText =
+        formatSignedNumber(data.dayChange);
+
+      document.getElementById('dayChangePercentDisplay').innerText =
+        formatSignedNumber(data.dayChangePercent);
+
+      document.getElementById('volumeDisplay').innerText =
+        formatNumber(data.volume);
+
+      document.getElementById('targetDistanceDisplay').innerText =
+        data.targetDistancePercent === null || data.targetDistancePercent === undefined
+          ? '-'
+          : formatSignedNumber(data.targetDistancePercent);
+
+      const reachedEl = document.getElementById('reachedTargetDisplay');
+
+      if (data.reachedTarget === null || data.reachedTarget === undefined) {
+        reachedEl.innerText = '-';
+        reachedEl.className = 'highlight';
+      } else if (data.reachedTarget) {
+        reachedEl.innerText = '已達標';
+        reachedEl.className = 'target-ok';
+      } else {
+        reachedEl.innerText = '未達標';
+        reachedEl.className = 'target-no';
+      }
+    }
+
+    function formatNumber(value) {
+      if (value === null || value === undefined || value === '') return '-';
+
+      const n = Number(value);
+
+      if (!Number.isFinite(n)) return '-';
+
+      return n.toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2
+      });
+    }
+
+    function formatSignedNumber(value) {
+      if (value === null || value === undefined || value === '') return '-';
+
+      const n = Number(value);
+
+      if (!Number.isFinite(n)) return '-';
+
+      return (n > 0 ? '+' : '') + n.toLocaleString(undefined, {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 2
+      });
     }
 
     document.getElementById('stockNo').addEventListener('keydown', function(e) {
