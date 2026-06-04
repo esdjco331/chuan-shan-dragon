@@ -1,3 +1,12 @@
+const RESULT_CACHE = new Map();
+const STOCK_LIST_CACHE = {
+  list: null,
+  time: 0
+};
+
+const CACHE_TIME = 1000 * 60 * 10; // 10分鐘
+const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時
+
 export default async function handler(req, res) {
   const input = String(req.query.stockNo || "").trim();
 
@@ -16,12 +25,42 @@ export default async function handler(req, res) {
     }
 
     const stockNo = resolved.stockNo;
+    const cacheKey = stockNo;
+    const cached = RESULT_CACHE.get(cacheKey);
+
+    if (cached && Date.now() - cached.time < CACHE_TIME) {
+      return res.status(200).json({
+        ...cached.data,
+        cache: true
+      });
+    }
+
     let stockName = resolved.stockName || "";
+    let market = resolved.market || "";
 
-    let rows = await fetchTwseDaily(stockNo);
+    if (!market) {
+      market = await detectMarket(stockNo);
+    }
 
-    if (rows.length < 60) {
+    let rows = [];
+
+    if (market === "tpex") {
       rows = await fetchTpexDaily(stockNo);
+    } else if (market === "twse") {
+      rows = await fetchTwseDaily(stockNo);
+    } else {
+      const [twseRows, tpexRows] = await Promise.all([
+        fetchTwseDaily(stockNo),
+        fetchTpexDaily(stockNo)
+      ]);
+
+      if (twseRows.length >= tpexRows.length) {
+        rows = twseRows;
+        market = "twse";
+      } else {
+        rows = tpexRows;
+        market = "tpex";
+      }
     }
 
     if (!stockName) {
@@ -36,6 +75,7 @@ export default async function handler(req, res) {
         stockNo,
         stockName,
         displayName,
+        market,
         message: `${displayName} 日K資料不足，可能是股號錯誤、非上市櫃，或資料來源暫時無法取得。`
       });
     }
@@ -50,6 +90,7 @@ export default async function handler(req, res) {
         stockNo,
         stockName,
         displayName,
+        market,
         message: `${displayName} 找不到足夠的穿惡訊號，至少需要最近一次穿惡與前方一段有效穿惡。`
       });
     }
@@ -74,6 +115,7 @@ export default async function handler(req, res) {
         stockNo,
         stockName,
         displayName,
+        market,
         message: `${displayName} 不符合穿山惡龍條件：最近一次穿惡之前，找不到漲幅大於30%的有效前波。`
       });
     }
@@ -86,11 +128,12 @@ export default async function handler(req, res) {
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
     const target = low2 * factor;
 
-    return res.status(200).json({
+    const result = {
       ok: true,
       stockNo,
       stockName,
       displayName,
+      market,
       crossDate1: validWave.crossDate,
       low1: round2(low1),
       high1: round2(high1),
@@ -98,8 +141,16 @@ export default async function handler(req, res) {
       breakDate1: validWave.breakDate,
       crossDate2: latestCross.date,
       low2: round2(low2),
-      target: round2(target)
+      target: round2(target),
+      cache: false
+    };
+
+    RESULT_CACHE.set(cacheKey, {
+      time: Date.now(),
+      data: result
     });
+
+    return res.status(200).json(result);
 
   } catch (err) {
     return res.status(500).json({
@@ -133,19 +184,19 @@ async function resolveStock(input) {
   const text = normalizeText(input);
 
   if (/^\d{4,6}$/.test(text)) {
-    const name = await getStockNameByCode(text);
     return {
       stockNo: text,
-      stockName: name || ""
+      stockName: getAliasNameByCode(text),
+      market: ""
     };
   }
 
   if (STOCK_ALIAS[text]) {
     const code = STOCK_ALIAS[text];
-    const name = await getStockNameByCode(code);
     return {
       stockNo: code,
-      stockName: name || text
+      stockName: text,
+      market: ""
     };
   }
 
@@ -160,98 +211,142 @@ async function resolveStock(input) {
   if (!found) {
     return {
       stockNo: "",
-      stockName: ""
+      stockName: "",
+      market: ""
     };
   }
 
   return {
     stockNo: found.code,
-    stockName: found.name
+    stockName: found.name,
+    market: found.market
   };
 }
 
+function getAliasNameByCode(code) {
+  for (const [name, stockCode] of Object.entries(STOCK_ALIAS)) {
+    if (stockCode === code) return name;
+  }
+  return "";
+}
+
 async function getStockNameByCode(code) {
+  const aliasName = getAliasNameByCode(code);
+  if (aliasName) return aliasName;
+
   const list = await getStockList();
   const found = list.find(s => s.code === code);
+
   return found ? found.name : "";
 }
 
-let STOCK_LIST_CACHE = null;
-let STOCK_LIST_CACHE_TIME = 0;
+async function detectMarket(code) {
+  const list = await getStockList();
+  const found = list.find(s => s.code === code);
+  return found ? found.market : "";
+}
 
 async function getStockList() {
   const now = Date.now();
 
-  if (STOCK_LIST_CACHE && now - STOCK_LIST_CACHE_TIME < 1000 * 60 * 60) {
-    return STOCK_LIST_CACHE;
+  if (
+    STOCK_LIST_CACHE.list &&
+    now - STOCK_LIST_CACHE.time < STOCK_LIST_CACHE_TIME
+  ) {
+    return STOCK_LIST_CACHE.list;
   }
 
   const list = [];
 
-  try {
-    const twseUrl = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL";
-    const r = await fetch(twseUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    const json = await r.json();
-
-    if (Array.isArray(json)) {
-      for (const item of json) {
-        const code = String(item.Code || item["證券代號"] || "").trim();
-        const name = String(item.Name || item["證券名稱"] || "").trim();
-
-        if (/^\d{4,6}$/.test(code) && name) {
-          list.push({ code, name });
-        }
-      }
-    }
-  } catch (_) {}
-
-  try {
-    const tpexUrl = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes";
-    const r = await fetch(tpexUrl, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-    const json = await r.json();
-
-    if (Array.isArray(json)) {
-      for (const item of json) {
-        const code = String(
-          item.Code ||
-          item.SecuritiesCompanyCode ||
-          item["SecuritiesCompanyCode"] ||
-          item["代號"] ||
-          item["證券代號"] ||
-          ""
-        ).trim();
-
-        const name = String(
-          item.Name ||
-          item.CompanyName ||
-          item.SecuritiesCompanyName ||
-          item["SecuritiesCompanyName"] ||
-          item["名稱"] ||
-          item["證券名稱"] ||
-          ""
-        ).trim();
-
-        if (/^\d{4,6}$/.test(code) && name) {
-          list.push({ code, name });
-        }
-      }
-    }
-  } catch (_) {}
+  await Promise.all([
+    fetchTwseStockList(list),
+    fetchTpexStockList(list)
+  ]);
 
   for (const [name, code] of Object.entries(STOCK_ALIAS)) {
     if (!list.some(s => s.code === code)) {
-      list.push({ code, name });
+      list.push({
+        code,
+        name,
+        market: ""
+      });
     }
   }
 
-  STOCK_LIST_CACHE = uniqueStockList(list);
-  STOCK_LIST_CACHE_TIME = now;
+  STOCK_LIST_CACHE.list = uniqueStockList(list);
+  STOCK_LIST_CACHE.time = now;
 
-  return STOCK_LIST_CACHE;
+  return STOCK_LIST_CACHE.list;
+}
+
+async function fetchTwseStockList(list) {
+  try {
+    const url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL";
+
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    const json = await r.json();
+
+    if (!Array.isArray(json)) return;
+
+    for (const item of json) {
+      const code = String(item.Code || item["證券代號"] || "").trim();
+      const name = String(item.Name || item["證券名稱"] || "").trim();
+
+      if (/^\d{4,6}$/.test(code) && name) {
+        list.push({
+          code,
+          name,
+          market: "twse"
+        });
+      }
+    }
+  } catch (_) {}
+}
+
+async function fetchTpexStockList(list) {
+  try {
+    const url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes";
+
+    const r = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    const json = await r.json();
+
+    if (!Array.isArray(json)) return;
+
+    for (const item of json) {
+      const code = String(
+        item.Code ||
+        item.SecuritiesCompanyCode ||
+        item["SecuritiesCompanyCode"] ||
+        item["代號"] ||
+        item["證券代號"] ||
+        ""
+      ).trim();
+
+      const name = String(
+        item.Name ||
+        item.CompanyName ||
+        item.SecuritiesCompanyName ||
+        item["SecuritiesCompanyName"] ||
+        item["名稱"] ||
+        item["證券名稱"] ||
+        ""
+      ).trim();
+
+      if (/^\d{4,6}$/.test(code) && name) {
+        list.push({
+          code,
+          name,
+          market: "tpex"
+        });
+      }
+    }
+  } catch (_) {}
 }
 
 function uniqueStockList(list) {
@@ -273,81 +368,93 @@ function normalizeText(str) {
     .trim();
 }
 
-/* ===== 日K資料 ===== */
+/* ===== 日K資料：平行抓月份 ===== */
 
 async function fetchTwseDaily(stockNo) {
-  const all = [];
   const months = getRecentMonths(12);
 
-  for (const ym of months) {
-    const url =
-      `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ym}01&stockNo=${stockNo}`;
+  const results = await Promise.all(
+    months.map(async ym => {
+      const url =
+        `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ym}01&stockNo=${stockNo}`;
 
-    try {
-      const r = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0" }
-      });
+      try {
+        const r = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0" }
+        });
 
-      const json = await r.json();
+        const json = await r.json();
 
-      if (!json || !Array.isArray(json.data)) continue;
+        if (!json || !Array.isArray(json.data)) return [];
 
-      for (const item of json.data) {
-        const date = rocToDate(item[0]);
-        const open = toNumber(item[3]);
-        const high = toNumber(item[4]);
-        const low = toNumber(item[5]);
-        const close = toNumber(item[6]);
+        return json.data.map(item => {
+          const date = rocToDate(item[0]);
+          const open = toNumber(item[3]);
+          const high = toNumber(item[4]);
+          const low = toNumber(item[5]);
+          const close = toNumber(item[6]);
 
-        if (date && open && high && low && close) {
-          all.push({ date, open, high, low, close });
-        }
+          if (date && open && high && low && close) {
+            return { date, open, high, low, close };
+          }
+
+          return null;
+        }).filter(Boolean);
+
+      } catch (_) {
+        return [];
       }
-    } catch (_) {}
-  }
+    })
+  );
 
-  return uniqueSort(all);
+  return uniqueSort(results.flat());
 }
 
 async function fetchTpexDaily(stockNo) {
-  const all = [];
   const months = getRecentMonths(12);
 
-  for (const ym of months) {
-    const year = ym.slice(0, 4);
-    const month = ym.slice(4, 6);
+  const results = await Promise.all(
+    months.map(async ym => {
+      const year = ym.slice(0, 4);
+      const month = ym.slice(4, 6);
 
-    const url =
-      `https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=${stockNo}&date=${year}/${month}/01&response=json`;
+      const url =
+        `https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=${stockNo}&date=${year}/${month}/01&response=json`;
 
-    try {
-      const r = await fetch(url, {
-        headers: { "User-Agent": "Mozilla/5.0" }
-      });
+      try {
+        const r = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0" }
+        });
 
-      const json = await r.json();
+        const json = await r.json();
 
-      const data = Array.isArray(json.data)
-        ? json.data
-        : Array.isArray(json.tables?.[0]?.data)
-          ? json.tables[0].data
-          : [];
+        const data = Array.isArray(json.data)
+          ? json.data
+          : Array.isArray(json.tables?.[0]?.data)
+            ? json.tables[0].data
+            : [];
 
-      for (const item of data) {
-        const date = rocToDate(item[0]);
-        const open = toNumber(item[3]);
-        const high = toNumber(item[4]);
-        const low = toNumber(item[5]);
-        const close = toNumber(item[6]);
+        return data.map(item => {
+          const date = rocToDate(item[0]);
+          const open = toNumber(item[3]);
+          const high = toNumber(item[4]);
+          const low = toNumber(item[5]);
+          const close = toNumber(item[6]);
 
-        if (date && open && high && low && close) {
-          all.push({ date, open, high, low, close });
-        }
+          if (date && open && high && low && close) {
+            return { date, open, high, low, close };
+          }
+
+          return null;
+        }).filter(Boolean);
+
+      } catch (_) {
+        return [];
       }
-    } catch (_) {}
-  }
+    })
+  );
 
-  return uniqueSort(all);
+  return uniqueSort(results.flat());
 }
 
 /* ===== 穿山惡龍邏輯 ===== */
