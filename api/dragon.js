@@ -145,6 +145,7 @@ export default async function handler(req, res) {
       stockName,
       displayName,
       market,
+      debugWaves,
       crossDate1: validWave.crossDate,
       low1: round2(low1),
       high1: round2(high1),
