@@ -86,6 +86,13 @@ export default async function handler(req, res) {
 
     rows = addMA20(rows);
 
+    const latestRow = rows[rows.length - 1];
+    const latestMA20 = latestRow?.ma20 ? round2(latestRow.ma20) : null;
+    const currentPriceForMA = quote.currentPrice || latestRow.close;
+
+    const isAboveMA20 =
+      latestMA20 !== null && currentPriceForMA > latestMA20;
+
     const crosses = findCrosses(rows);
 
     if (crosses.length < 2) {
@@ -96,72 +103,78 @@ export default async function handler(req, res) {
         displayName,
         market,
         ...quote,
+        latestMA20,
+        isAboveMA20,
+        ma20Status: isAboveMA20 ? "目前已站上20MA" : "目前尚未穿惡",
         message: `${displayName} 找不到足夠的穿惡訊號，至少需要最近一次穿惡與前方一段有效穿惡。`
       });
     }
 
     const latestCross = crosses[crosses.length - 1];
 
-const halfYearAgo = new Date();
-halfYearAgo.setMonth(halfYearAgo.getMonth() - 6);
+    const halfYearAgo = new Date();
+    halfYearAgo.setMonth(halfYearAgo.getMonth() - 6);
 
-let validWave = null;
-let checkedWaveCount = 0;
-let bestWave = null;
+    let validWave = null;
+    let checkedWaveCount = 0;
+    let bestWave = null;
 
-for (let i = crosses.length - 2; i >= 0; i--) {
-  const cross = crosses[i];
+    for (let i = crosses.length - 2; i >= 0; i--) {
+      const cross = crosses[i];
 
-  if (new Date(cross.date) < halfYearAgo) {
-    break;
-  }
+      if (new Date(cross.date) < halfYearAgo) {
+        break;
+      }
 
-  const wave = buildWave(rows, cross);
+      const wave = buildWave(rows, cross);
 
-  if (!wave) continue;
+      if (!wave) continue;
 
-  checkedWaveCount++;
+      checkedWaveCount++;
 
-  if (!bestWave || wave.gainPercent > bestWave.gainPercent) {
-    bestWave = wave;
-  }
+      if (!bestWave || wave.gainPercent > bestWave.gainPercent) {
+        bestWave = wave;
+      }
 
-  if (wave.gainPercent > 25) {
-    validWave = wave;
-    break;
-  }
-}
+      if (wave.gainPercent > 25) {
+        validWave = wave;
+        break;
+      }
+    }
 
-if (!validWave) {
-  return res.status(200).json({
-    ok: false,
-    stockNo,
-    stockName,
-    displayName,
-    market,
-    ...quote,
-    message: bestWave
-      ? `${displayName} 半年內找過 ${checkedWaveCount} 段完成波段，最高漲幅僅 ${round2(bestWave.gainPercent)}%，未達25%。`
-      : `${displayName} 半年內找不到符合條件的完成波段。`
-  });
-}
+    if (!validWave) {
+      return res.status(200).json({
+        ok: false,
+        stockNo,
+        stockName,
+        displayName,
+        market,
+        ...quote,
+        latestMA20,
+        isAboveMA20,
+        ma20Status: isAboveMA20 ? "目前已站上20MA" : "目前尚未穿惡",
+        message: bestWave
+          ? `${displayName} 半年內找過 ${checkedWaveCount} 段完成波段，最高漲幅僅 ${round2(bestWave.gainPercent)}%，未達25%。`
+          : `${displayName} 半年內找不到符合條件的完成波段。`
+      });
+    }
 
     const low1 = validWave.low1;
     const high1 = validWave.high1;
-    const low2 = latestCross.low;
 
     const gainPercent = ((high1 - low1) / low1) * 100;
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
-    const target = low2 * factor;
-    const roundedTarget = round2(target);
+
+    const low2 = isAboveMA20 ? latestCross.low : null;
+    const roundedTarget = isAboveMA20 ? round2(low2 * factor) : null;
 
     const targetDistancePercent =
-      quote.currentPrice
+      isAboveMA20 && quote.currentPrice && roundedTarget
         ? round2(((roundedTarget - quote.currentPrice) / quote.currentPrice) * 100)
         : null;
 
     const reachedTarget =
-      quote.currentPrice
+      isAboveMA20 && quote.currentPrice && roundedTarget
         ? quote.currentPrice >= roundedTarget
         : null;
 
@@ -188,6 +201,10 @@ if (!validWave) {
       volume: quote.volume,
       volumeUnit: "張",
 
+      latestMA20,
+      isAboveMA20,
+      ma20Status: isAboveMA20 ? "目前已站上20MA" : "目前尚未穿惡",
+
       debugWaves,
 
       crossDate1: validWave.crossDate,
@@ -196,19 +213,21 @@ if (!validWave) {
       gainPercent: round2(gainPercent),
       breakDate1: validWave.breakDate,
 
-      crossDate2: latestCross.date,
-      low2: round2(low2),
+      crossDate2: isAboveMA20 ? latestCross.date : "目前尚未穿惡",
+      low2: isAboveMA20 ? round2(low2) : null,
 
       target: roundedTarget,
       targetDistancePercent,
       reachedTarget,
 
       targetMessage:
-        reachedTarget === null
-          ? "即時行情不足，無法判斷是否達標"
-          : reachedTarget
-            ? "目前股價已達目標價"
-            : `距離目標價還有 ${targetDistancePercent}%`,
+        !isAboveMA20
+          ? "目前尚未穿惡，不顯示目標價"
+          : reachedTarget === null
+            ? "即時行情不足，無法判斷是否達標"
+            : reachedTarget
+              ? "目前股價已達目標價"
+              : `距離目標價還有 ${targetDistancePercent}%`,
 
       cache: false
     };
