@@ -263,7 +263,7 @@
       box.innerHTML = '正在抓取日K、即時行情並計算20MA...';
 
       try {
-        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}&refresh=1`);
+        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}`);
         const data = await res.json();
 
         if (!data.ok) {
