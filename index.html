@@ -294,7 +294,8 @@
       box.innerHTML = '正在抓取日K、即時行情並計算20MA...';
 
       try {
-        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}`);
+        // 加上 &_t=${Date.now()} 避免 Vercel 強制快取舊資料
+        const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}&_t=${Date.now()}`);
         const data = await res.json();
 
         currentIsAboveMA20 =
