@@ -189,17 +189,6 @@
       <div>距離目標價：<span id="targetDistanceDisplay" class="highlight">-</span>%</div>
       <div>是否達標：<span id="reachedTargetDisplay" class="highlight">-</span></div>
     </div>
-
-    <div class="result-box">
-      <div>第一次穿惡日期：<span id="crossDate1" class="highlight">-</span></div>
-      <div>第一次穿惡低點：<span id="low1Display" class="highlight">-</span></div>
-      <div>第一波最高點：<span id="high1Display" class="highlight">-</span></div>
-      <div>第一波漲幅：<span id="gainDisplay" class="highlight">-</span>%</div>
-      <div>跌破20MA日期：<span id="breakDate1" class="highlight">-</span></div>
-      <div>最近一次穿惡日期：<span id="crossDate2" class="highlight">-</span></div>
-      <div>最近一次穿惡低點：<span id="low2Display" class="highlight">-</span></div>
-      <div class="small">條件：第一波低點到高點漲幅必須大於 25%</div>
-    </div>
   </div>
 
   <script>
@@ -264,14 +253,6 @@
       document.getElementById('targetDistanceDisplay').innerText = '-';
       document.getElementById('reachedTargetDisplay').innerText = '-';
       document.getElementById('reachedTargetDisplay').className = 'highlight';
-
-      document.getElementById('crossDate1').innerText = '-';
-      document.getElementById('low1Display').innerText = '-';
-      document.getElementById('high1Display').innerText = '-';
-      document.getElementById('gainDisplay').innerText = '-';
-      document.getElementById('breakDate1').innerText = '-';
-      document.getElementById('crossDate2').innerText = '-';
-      document.getElementById('low2Display').innerText = '-';
     }
 
     async function autoDragon() {
@@ -294,7 +275,6 @@
       box.innerHTML = '正在抓取日K、即時行情並計算20MA...';
 
       try {
-        // 加上 &_t=${Date.now()} 避免 Vercel 強制快取舊資料
         const res = await fetch(`/api/dragon?stockNo=${encodeURIComponent(stockNo)}&_t=${Date.now()}`);
         const data = await res.json();
 
@@ -338,22 +318,6 @@
           document.getElementById('priceX').disabled = false;
           document.getElementById('priceXStatus').innerText = '';
         }
-
-        document.getElementById('crossDate1').innerText = data.crossDate1 || '-';
-        document.getElementById('low1Display').innerText = formatNumber(data.low1);
-        document.getElementById('high1Display').innerText = formatNumber(data.high1);
-        document.getElementById('gainDisplay').innerText = formatNumber(data.gainPercent);
-        document.getElementById('breakDate1').innerText = data.breakDate1 || '-';
-
-        document.getElementById('crossDate2').innerText =
-          currentIsAboveMA20 === false
-            ? '目前尚未穿惡'
-            : data.crossDate2 || '-';
-
-        document.getElementById('low2Display').innerText =
-          currentIsAboveMA20 === false
-            ? '目前尚未穿惡'
-            : formatNumber(data.low2);
 
         calculate();
 
