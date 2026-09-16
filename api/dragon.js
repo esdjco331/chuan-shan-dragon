@@ -4,8 +4,8 @@ const STOCK_LIST_CACHE = {
   time: 0
 };
 
-const CACHE_TIME = 1000 * 60 * 10;
-const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60;
+const CACHE_TIME = 1000 * 60 * 10; // 10分鐘快取
+const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時快取
 
 export default async function handler(req, res) {
   const input = String(req.query.stockNo || "").trim();
@@ -26,7 +26,8 @@ export default async function handler(req, res) {
 
     const stockNo = resolved.stockNo;
     const cacheKey = stockNo;
-    const forceRefresh = req.query.refresh === "1";
+    // 當請求帶有 refresh=1 或時間戳記時強制刷新快取
+    const forceRefresh = req.query.refresh === "1" || !!req.query._t;
     const cached = RESULT_CACHE.get(cacheKey);
 
     if (!forceRefresh && cached && Date.now() - cached.time < CACHE_TIME) {
@@ -247,17 +248,17 @@ export default async function handler(req, res) {
   }
 }
 
-/* ===== 即時行情 ===== */
+/* ===== 即時行情修正版 ===== */
 
 async function getRealtimeQuote(stockNo) {
   try {
     const url =
       `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?` +
-      `ex_ch=tse_${stockNo}.tw|otc_${stockNo}.tw&json=1&delay=0`;
+      `ex_ch=tse_${stockNo}.tw|otc_${stockNo}.tw&json=1&delay=0&_=${Date.now()}`;
 
     const r = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://mis.twse.com.tw/stock/index.jsp"
       }
     });
@@ -272,8 +273,9 @@ async function getRealtimeQuote(stockNo) {
       return emptyQuote();
     }
 
-    const currentPrice = firstValidNumber(row.z, row.pz, row.o, row.a);
-    const yesterdayClose = firstValidNumber(row.y, row.yz);
+    // 關鍵修正：嚴格優先取 z (最新成交價)，若無則取 pz (試算成交價)，最後才考慮 o (開盤價)
+    const currentPrice = parseRealtimePrice(row);
+    const yesterdayClose = toNumber(row.y);
 
     const dayChange =
       currentPrice && yesterdayClose
@@ -300,6 +302,42 @@ async function getRealtimeQuote(stockNo) {
   }
 }
 
+// 專門解析證交所 MIS 最新股價邏輯
+function parseRealtimePrice(row) {
+  if (!row) return null;
+
+  // 1. 優先嘗試當盤最新成交價 (z)
+  let val = cleanPriceStr(row.z);
+  if (val !== null) return val;
+
+  // 2. 試算成交價 (pz)
+  val = cleanPriceStr(row.pz);
+  if (val !== null) return val;
+
+  // 3. 買價 (b) 或 賣價 (a) 第一檔平均/離散參考
+  val = cleanPriceStr(row.a);
+  if (val !== null) return val;
+  
+  val = cleanPriceStr(row.b);
+  if (val !== null) return val;
+
+  // 4. 最後備用：開盤價 (o)
+  val = cleanPriceStr(row.o);
+  if (val !== null) return val;
+
+  return null;
+}
+
+function cleanPriceStr(v) {
+  if (v === undefined || v === null) return null;
+
+  const str = String(v).split("_")[0].split("|")[0].replace(/-/g, "").trim();
+  if (!str) return null;
+
+  const n = Number(str);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 function emptyQuote() {
   return {
     name: "",
@@ -308,19 +346,6 @@ function emptyQuote() {
     dayChangePercent: null,
     volume: null
   };
-}
-
-function firstValidNumber(...values) {
-  for (const v of values) {
-    if (v === undefined || v === null) continue;
-
-    const first = String(v).split("_")[0].split("|")[0].trim();
-    const n = toNumber(first);
-
-    if (n !== null && n > 0) return n;
-  }
-
-  return null;
 }
 
 /* ===== 股號 / 股名解析 ===== */
@@ -340,7 +365,8 @@ const STOCK_ALIAS = {
   "前鼎": "4908",
   "台半": "5425",
   "環球晶": "6488",
-  "波若威": "3163"
+  "波若威": "3163",
+  "聯茂": "6213"
 };
 
 async function resolveStock(input) {
