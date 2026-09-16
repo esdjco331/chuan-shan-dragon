@@ -4,7 +4,8 @@ const STOCK_LIST_CACHE = {
   time: 0
 };
 
-const CACHE_TIME = 1000 * 60 * 10; // 10分鐘快取
+// 關鍵修正 1：將快取由 10 分鐘縮短至 5 秒，確保盤中查詢即時性
+const CACHE_TIME = 1000 * 5; // 5秒快取
 const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時快取
 
 export default async function handler(req, res) {
@@ -83,6 +84,29 @@ export default async function handler(req, res) {
         ...quote,
         message: `${displayName} 日K資料不足，可能是股號錯誤、非上市櫃，或資料來源暫時無法取得。`
       });
+    }
+
+    // 關鍵修正 2：如果今天是開盤交易日且有即時行情，動態將今日即時價併入日K資料最後一筆算 20MA
+    const todayStr = getTodayRocDate();
+    const lastRowDate = rows[rows.length - 1]?.date;
+
+    if (quote.currentPrice) {
+      if (lastRowDate === todayStr) {
+        // 今日收盤K線已存在，更新收盤價/最高/最低
+        const last = rows[rows.length - 1];
+        last.close = quote.currentPrice;
+        if (quote.currentPrice > last.high) last.high = quote.currentPrice;
+        if (quote.currentPrice < last.low) last.low = quote.currentPrice;
+      } else {
+        // 盤中階段，日K尚未產出今日K線，動態追加今日即時K棒
+        rows.push({
+          date: todayStr,
+          open: quote.currentPrice,
+          high: quote.currentPrice,
+          low: quote.currentPrice,
+          close: quote.currentPrice
+        });
+      }
     }
 
     rows = addMA20(rows);
@@ -164,6 +188,7 @@ export default async function handler(req, res) {
     const high1 = validWave.high1;
 
     const gainPercent = ((high1 - low1) / low1) * 100;
+    // 穿山惡龍目標價公式 (含 50% 加權)
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
 
     const low2 = isAboveMA20 ? latestCross.low : null;
@@ -252,6 +277,7 @@ export default async function handler(req, res) {
 
 async function getRealtimeQuote(stockNo) {
   try {
+    // 網址加上隨機時間戳 _=${Date.now()} 避免伺服器端 HTTP 快取
     const url =
       `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?` +
       `ex_ch=tse_${stockNo}.tw|otc_${stockNo}.tw&json=1&delay=0&_=${Date.now()}`;
@@ -259,7 +285,8 @@ async function getRealtimeQuote(stockNo) {
     const r = await fetch(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-        "Referer": "https://mis.twse.com.tw/stock/index.jsp"
+        "Referer": "https://mis.twse.com.tw/stock/index.jsp",
+        "Cache-Control": "no-cache"
       }
     });
 
@@ -273,7 +300,6 @@ async function getRealtimeQuote(stockNo) {
       return emptyQuote();
     }
 
-    // 關鍵修正：嚴格優先取 z (最新成交價)，若無則取 pz (試算成交價)，最後才考慮 o (開盤價)
     const currentPrice = parseRealtimePrice(row);
     const yesterdayClose = toNumber(row.y);
 
@@ -314,10 +340,10 @@ function parseRealtimePrice(row) {
   val = cleanPriceStr(row.pz);
   if (val !== null) return val;
 
-  // 3. 買價 (b) 或 賣價 (a) 第一檔平均/離散參考
+  // 3. 買價 (a) 或 賣價 (b) 最佳一檔參考 (貼近現價)
   val = cleanPriceStr(row.a);
   if (val !== null) return val;
-  
+
   val = cleanPriceStr(row.b);
   if (val !== null) return val;
 
@@ -723,6 +749,14 @@ function buildWave(rows, cross) {
 }
 
 /* ===== 工具函式 ===== */
+
+function getTodayRocDate() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
 
 function getRecentMonths(count) {
   const arr = [];
