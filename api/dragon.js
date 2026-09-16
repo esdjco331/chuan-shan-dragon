@@ -4,7 +4,6 @@ const STOCK_LIST_CACHE = {
   time: 0
 };
 
-// 關鍵修正 1：將快取由 10 分鐘縮短至 5 秒，確保盤中查詢即時性
 const CACHE_TIME = 1000 * 5; // 5秒快取
 const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時快取
 
@@ -27,7 +26,6 @@ export default async function handler(req, res) {
 
     const stockNo = resolved.stockNo;
     const cacheKey = stockNo;
-    // 當請求帶有 refresh=1 或時間戳記時強制刷新快取
     const forceRefresh = req.query.refresh === "1" || !!req.query._t;
     const cached = RESULT_CACHE.get(cacheKey);
 
@@ -49,14 +47,15 @@ export default async function handler(req, res) {
 
     let rows = [];
 
+    // 抓取 7 個月資料，足以穩定計算 120MA (半年線)，速度極快
     if (market === "tpex") {
-      rows = await fetchTpexDaily(stockNo);
+      rows = await fetchTpexDaily(stockNo, 7);
     } else if (market === "twse") {
-      rows = await fetchTwseDaily(stockNo);
+      rows = await fetchTwseDaily(stockNo, 7);
     } else {
       const [twseRows, tpexRows] = await Promise.all([
-        fetchTwseDaily(stockNo),
-        fetchTpexDaily(stockNo)
+        fetchTwseDaily(stockNo, 7),
+        fetchTpexDaily(stockNo, 7)
       ]);
 
       if (twseRows.length >= tpexRows.length) {
@@ -86,19 +85,17 @@ export default async function handler(req, res) {
       });
     }
 
-    // 關鍵修正 2：如果今天是開盤交易日且有即時行情，動態將今日即時價併入日K資料最後一筆算 20MA
+    // 動態併入今日即時價
     const todayStr = getTodayRocDate();
     const lastRowDate = rows[rows.length - 1]?.date;
 
     if (quote.currentPrice) {
       if (lastRowDate === todayStr) {
-        // 今日收盤K線已存在，更新收盤價/最高/最低
         const last = rows[rows.length - 1];
         last.close = quote.currentPrice;
         if (quote.currentPrice > last.high) last.high = quote.currentPrice;
         if (quote.currentPrice < last.low) last.low = quote.currentPrice;
       } else {
-        // 盤中階段，日K尚未產出今日K線，動態追加今日即時K棒
         rows.push({
           date: todayStr,
           open: quote.currentPrice,
@@ -109,16 +106,44 @@ export default async function handler(req, res) {
       }
     }
 
-    rows = addMA20(rows);
+    // 計算均線 (20MA, 60MA 季線, 120MA 半年線)
+    rows = addAllMAs(rows);
 
     const latestRow = rows[rows.length - 1];
     const latestMA20 = latestRow?.ma20 ? round2(latestRow.ma20) : null;
+    const latestMA60 = latestRow?.ma60 ? round2(latestRow.ma60) : null;
+    const latestMA120 = latestRow?.ma120 ? round2(latestRow.ma120) : null;
+
     const currentPriceForMA = quote.currentPrice || latestRow.close;
 
-    const isAboveMA20 =
-      latestMA20 !== null && currentPriceForMA > latestMA20;
+    const isAboveMA20 = latestMA20 !== null && currentPriceForMA > latestMA20;
+    
+    // 濾網：需同時站上 60MA (季線) 與 120MA (半年線)
+    const isAboveMA60 = latestMA60 === null || currentPriceForMA > latestMA60;
+    const isAboveMA120 = latestMA120 === null || currentPriceForMA > latestMA120;
+
+    const isAboveLongTermMAs = isAboveMA60 && isAboveMA120;
 
     const crosses = findCrosses(rows);
+
+    // 未站上長天期均線時的處理
+    if (!isAboveLongTermMAs) {
+      return res.status(200).json({
+        ok: false,
+        stockNo,
+        stockName,
+        displayName,
+        market,
+        ...quote,
+        latestMA20,
+        latestMA60,
+        latestMA120,
+        isAboveMA20,
+        isAboveLongTermMAs: false,
+        ma20Status: isAboveMA20 ? "已站上20MA" : "未穿惡",
+        message: `${displayName} 該股均線壓力大（未同時站在季線與半年線之上），故不顯示目標價。`
+      });
+    }
 
     if (crosses.length < 2) {
       return res.status(200).json({
@@ -130,13 +155,13 @@ export default async function handler(req, res) {
         ...quote,
         latestMA20,
         isAboveMA20,
-        ma20Status: isAboveMA20 ? "目前已站上20MA" : "目前尚未穿惡",
+        isAboveLongTermMAs,
+        ma20Status: isAboveMA20 ? "已站上20MA" : "未穿惡",
         message: `${displayName} 找不到足夠的穿惡訊號，至少需要最近一次穿惡與前方一段有效穿惡。`
       });
     }
 
     const latestCross = crosses[crosses.length - 1];
-
     const halfYearAgo = new Date();
     halfYearAgo.setMonth(halfYearAgo.getMonth() - 6);
 
@@ -146,17 +171,12 @@ export default async function handler(req, res) {
 
     for (let i = crosses.length - 2; i >= 0; i--) {
       const cross = crosses[i];
-
-      if (new Date(cross.date) < halfYearAgo) {
-        break;
-      }
+      if (new Date(cross.date) < halfYearAgo) break;
 
       const wave = buildWave(rows, cross);
-
       if (!wave) continue;
 
       checkedWaveCount++;
-
       if (!bestWave || wave.gainPercent > bestWave.gainPercent) {
         bestWave = wave;
       }
@@ -177,7 +197,8 @@ export default async function handler(req, res) {
         ...quote,
         latestMA20,
         isAboveMA20,
-        ma20Status: isAboveMA20 ? "目前已站上20MA" : "目前尚未穿惡",
+        isAboveLongTermMAs,
+        ma20Status: isAboveMA20 ? "已站上20MA" : "未穿惡",
         message: bestWave
           ? `${displayName} 半年內找過 ${checkedWaveCount} 段完成波段，最高漲幅僅 ${round2(bestWave.gainPercent)}%，未達25%。`
           : `${displayName} 半年內找不到符合條件的完成波段。`
@@ -186,33 +207,24 @@ export default async function handler(req, res) {
 
     const low1 = validWave.low1;
     const high1 = validWave.high1;
-
     const gainPercent = ((high1 - low1) / low1) * 100;
+    
     // 穿山惡龍目標價公式 (含 50% 加權)
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
-
     const low2 = isAboveMA20 ? latestCross.low : null;
-    const roundedTarget = isAboveMA20 ? round2(low2 * factor) : null;
+
+    const canShowTarget = isAboveMA20 && isAboveLongTermMAs;
+    const roundedTarget = canShowTarget ? round2(low2 * factor) : null;
 
     const targetDistancePercent =
-      isAboveMA20 && quote.currentPrice && roundedTarget
+      canShowTarget && quote.currentPrice && roundedTarget
         ? round2(((roundedTarget - quote.currentPrice) / quote.currentPrice) * 100)
         : null;
 
     const reachedTarget =
-      isAboveMA20 && quote.currentPrice && roundedTarget
+      canShowTarget && quote.currentPrice && roundedTarget
         ? quote.currentPrice >= roundedTarget
         : null;
-
-    const debugWaves = crosses.map(cross => buildWave(rows, cross))
-      .filter(Boolean)
-      .map(w => ({
-        crossDate: w.crossDate,
-        low1: round2(w.low1),
-        high1: round2(w.high1),
-        gainPercent: round2(w.gainPercent),
-        breakDate: w.breakDate
-      }));
 
     const result = {
       ok: true,
@@ -228,32 +240,30 @@ export default async function handler(req, res) {
       volumeUnit: "張",
 
       latestMA20,
+      latestMA60,
+      latestMA120,
       isAboveMA20,
+      isAboveLongTermMAs,
       ma20Status: isAboveMA20 ? "目前已站上20MA" : "目前尚未穿惡",
 
-      debugWaves,
-
-      crossDate1: validWave.crossDate,
       low1: round2(low1),
       high1: round2(high1),
-      gainPercent: round2(gainPercent),
-      breakDate1: validWave.breakDate,
-
-      crossDate2: isAboveMA20 ? latestCross.date : "目前尚未穿惡",
-      low2: isAboveMA20 ? round2(low2) : null,
+      low2: canShowTarget ? round2(low2) : null,
 
       target: roundedTarget,
       targetDistancePercent,
       reachedTarget,
 
       targetMessage:
-        !isAboveMA20
-          ? "目前尚未穿惡，不顯示目標價"
-          : reachedTarget === null
-            ? "即時行情不足，無法判斷是否達標"
-            : reachedTarget
-              ? "目前股價已達目標價"
-              : `距離目標價還有 ${targetDistancePercent}%`,
+        !isAboveLongTermMAs
+          ? "該股均線壓力大，不顯示目標價"
+          : !isAboveMA20
+            ? "目前尚未穿惡，不顯示目標價"
+            : reachedTarget === null
+              ? "即時行情不足，無法判斷是否達標"
+              : reachedTarget
+                ? "目前股價已達目標價"
+                : `距離目標價還有 ${targetDistancePercent}%`,
 
       cache: false
     };
@@ -273,11 +283,10 @@ export default async function handler(req, res) {
   }
 }
 
-/* ===== 即時行情修正版 ===== */
+/* ===== 即時行情解析 ===== */
 
 async function getRealtimeQuote(stockNo) {
   try {
-    // 網址加上隨機時間戳 _=${Date.now()} 避免伺服器端 HTTP 快取
     const url =
       `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?` +
       `ex_ch=tse_${stockNo}.tw|otc_${stockNo}.tw&json=1&delay=0&_=${Date.now()}`;
@@ -291,28 +300,15 @@ async function getRealtimeQuote(stockNo) {
     });
 
     const json = await r.json();
+    const row = json?.msgArray?.find(item => String(item.c || "").trim() === String(stockNo));
 
-    const row = json?.msgArray?.find(item => {
-      return String(item.c || "").trim() === String(stockNo);
-    });
-
-    if (!row) {
-      return emptyQuote();
-    }
+    if (!row) return emptyQuote();
 
     const currentPrice = parseRealtimePrice(row);
     const yesterdayClose = toNumber(row.y);
 
-    const dayChange =
-      currentPrice && yesterdayClose
-        ? round2(currentPrice - yesterdayClose)
-        : null;
-
-    const dayChangePercent =
-      currentPrice && yesterdayClose
-        ? round2(((currentPrice - yesterdayClose) / yesterdayClose) * 100)
-        : null;
-
+    const dayChange = currentPrice && yesterdayClose ? round2(currentPrice - yesterdayClose) : null;
+    const dayChangePercent = currentPrice && yesterdayClose ? round2(((currentPrice - yesterdayClose) / yesterdayClose) * 100) : null;
     const volume = toNumber(row.v);
 
     return {
@@ -322,120 +318,62 @@ async function getRealtimeQuote(stockNo) {
       dayChangePercent,
       volume
     };
-
   } catch (_) {
     return emptyQuote();
   }
 }
 
-// 專門解析證交所 MIS 最新股價邏輯
 function parseRealtimePrice(row) {
   if (!row) return null;
-
-  // 1. 優先嘗試當盤最新成交價 (z)
   let val = cleanPriceStr(row.z);
   if (val !== null) return val;
-
-  // 2. 試算成交價 (pz)
   val = cleanPriceStr(row.pz);
   if (val !== null) return val;
-
-  // 3. 買價 (a) 或 賣價 (b) 最佳一檔參考 (貼近現價)
   val = cleanPriceStr(row.a);
   if (val !== null) return val;
-
   val = cleanPriceStr(row.b);
   if (val !== null) return val;
-
-  // 4. 最後備用：開盤價 (o)
   val = cleanPriceStr(row.o);
   if (val !== null) return val;
-
   return null;
 }
 
 function cleanPriceStr(v) {
   if (v === undefined || v === null) return null;
-
   const str = String(v).split("_")[0].split("|")[0].replace(/-/g, "").trim();
   if (!str) return null;
-
   const n = Number(str);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 function emptyQuote() {
-  return {
-    name: "",
-    currentPrice: null,
-    dayChange: null,
-    dayChangePercent: null,
-    volume: null
-  };
+  return { name: "", currentPrice: null, dayChange: null, dayChangePercent: null, volume: null };
 }
 
 /* ===== 股號 / 股名解析 ===== */
 
 const STOCK_ALIAS = {
-  "台積電": "2330",
-  "鴻海": "2317",
-  "聯發科": "2454",
-  "聯電": "2303",
-  "廣達": "2382",
-  "緯創": "3231",
-  "群創": "3481",
-  "友達": "2409",
-  "聯鈞": "3450",
-  "科嶠": "4542",
-  "國精化": "4722",
-  "前鼎": "4908",
-  "台半": "5425",
-  "環球晶": "6488",
-  "波若威": "3163",
-  "聯茂": "6213"
+  "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "聯電": "2303",
+  "廣達": "2382", "緯創": "3231", "群創": "3481", "友達": "2409",
+  "聯鈞": "3450", "科嶠": "4542", "國精化": "4722", "前鼎": "4908",
+  "台半": "5425", "環球晶": "6488", "波若威": "3163", "聯茂": "6213"
 };
 
 async function resolveStock(input) {
   const text = normalizeText(input);
-
   if (/^\d{4,6}$/.test(text)) {
-    return {
-      stockNo: text,
-      stockName: getAliasNameByCode(text),
-      market: ""
-    };
+    return { stockNo: text, stockName: getAliasNameByCode(text), market: "" };
   }
-
   if (STOCK_ALIAS[text]) {
-    const code = STOCK_ALIAS[text];
-    return {
-      stockNo: code,
-      stockName: text,
-      market: ""
-    };
+    return { stockNo: STOCK_ALIAS[text], stockName: text, market: "" };
   }
 
   const list = await getStockList();
+  let found = list.find(s => normalizeText(s.name) === text) || list.find(s => normalizeText(s.name).includes(text));
 
-  let found = list.find(s => normalizeText(s.name) === text);
+  if (!found) return { stockNo: "", stockName: "", market: "" };
 
-  if (!found) {
-    found = list.find(s => normalizeText(s.name).includes(text));
-  }
-
-  if (!found) {
-    return {
-      stockNo: "",
-      stockName: "",
-      market: ""
-    };
-  }
-
-  return {
-    stockNo: found.code,
-    stockName: found.name,
-    market: found.market
-  };
+  return { stockNo: found.code, stockName: found.name, market: found.market };
 }
 
 function getAliasNameByCode(code) {
@@ -448,10 +386,8 @@ function getAliasNameByCode(code) {
 async function getStockNameByCode(code) {
   const aliasName = getAliasNameByCode(code);
   if (aliasName) return aliasName;
-
   const list = await getStockList();
   const found = list.find(s => s.code === code);
-
   return found ? found.name : "";
 }
 
@@ -463,143 +399,73 @@ async function detectMarket(code) {
 
 async function getStockList() {
   const now = Date.now();
-
-  if (
-    STOCK_LIST_CACHE.list &&
-    now - STOCK_LIST_CACHE.time < STOCK_LIST_CACHE_TIME
-  ) {
+  if (STOCK_LIST_CACHE.list && now - STOCK_LIST_CACHE.time < STOCK_LIST_CACHE_TIME) {
     return STOCK_LIST_CACHE.list;
   }
 
   const list = [];
-
-  await Promise.all([
-    fetchTwseStockList(list),
-    fetchTpexStockList(list)
-  ]);
+  await Promise.all([fetchTwseStockList(list), fetchTpexStockList(list)]);
 
   for (const [name, code] of Object.entries(STOCK_ALIAS)) {
     if (!list.some(s => s.code === code)) {
-      list.push({
-        code,
-        name,
-        market: ""
-      });
+      list.push({ code, name, market: "" });
     }
   }
 
   STOCK_LIST_CACHE.list = uniqueStockList(list);
   STOCK_LIST_CACHE.time = now;
-
   return STOCK_LIST_CACHE.list;
 }
 
 async function fetchTwseStockList(list) {
   try {
-    const url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL";
-
-    const r = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-
+    const r = await fetch("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", { headers: { "User-Agent": "Mozilla/5.0" } });
     const json = await r.json();
-
     if (!Array.isArray(json)) return;
-
     for (const item of json) {
       const code = String(item.Code || item["證券代號"] || "").trim();
       const name = String(item.Name || item["證券名稱"] || "").trim();
-
-      if (/^\d{4,6}$/.test(code) && name) {
-        list.push({
-          code,
-          name,
-          market: "twse"
-        });
-      }
+      if (/^\d{4,6}$/.test(code) && name) list.push({ code, name, market: "twse" });
     }
   } catch (_) {}
 }
 
 async function fetchTpexStockList(list) {
   try {
-    const url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes";
-
-    const r = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0" }
-    });
-
+    const r = await fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", { headers: { "User-Agent": "Mozilla/5.0" } });
     const json = await r.json();
-
     if (!Array.isArray(json)) return;
-
     for (const item of json) {
-      const code = String(
-        item.Code ||
-        item.SecuritiesCompanyCode ||
-        item["SecuritiesCompanyCode"] ||
-        item["代號"] ||
-        item["證券代號"] ||
-        ""
-      ).trim();
-
-      const name = String(
-        item.Name ||
-        item.CompanyName ||
-        item.SecuritiesCompanyName ||
-        item["SecuritiesCompanyName"] ||
-        item["名稱"] ||
-        item["證券名稱"] ||
-        ""
-      ).trim();
-
-      if (/^\d{4,6}$/.test(code) && name) {
-        list.push({
-          code,
-          name,
-          market: "tpex"
-        });
-      }
+      const code = String(item.Code || item.SecuritiesCompanyCode || item["代號"] || "").trim();
+      const name = String(item.Name || item.CompanyName || item["名稱"] || "").trim();
+      if (/^\d{4,6}$/.test(code) && name) list.push({ code, name, market: "tpex" });
     }
   } catch (_) {}
 }
 
 function uniqueStockList(list) {
   const map = new Map();
-
   for (const item of list) {
-    if (!map.has(item.code)) {
-      map.set(item.code, item);
-    }
+    if (!map.has(item.code)) map.set(item.code, item);
   }
-
   return Array.from(map.values());
 }
 
 function normalizeText(str) {
-  return String(str || "")
-    .replace(/\s/g, "")
-    .replace("臺", "台")
-    .trim();
+  return String(str || "").replace(/\s/g, "").replace("臺", "台").trim();
 }
 
-/* ===== 日K資料：平行抓月份 ===== */
+/* ===== 日K資料抓取 (7 個月) ===== */
 
-async function fetchTwseDaily(stockNo) {
-  const months = getRecentMonths(6);
+async function fetchTwseDaily(stockNo, monthCount = 7) {
+  const months = getRecentMonths(monthCount);
 
   const results = await Promise.all(
     months.map(async ym => {
-      const url =
-        `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ym}01&stockNo=${stockNo}`;
-
+      const url = `https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date=${ym}01&stockNo=${stockNo}`;
       try {
-        const r = await fetch(url, {
-          headers: { "User-Agent": "Mozilla/5.0" }
-        });
-
+        const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
         const json = await r.json();
-
         if (!json || !Array.isArray(json.data)) return [];
 
         return json.data.map(item => {
@@ -608,14 +474,8 @@ async function fetchTwseDaily(stockNo) {
           const high = toNumber(item[4]);
           const low = toNumber(item[5]);
           const close = toNumber(item[6]);
-
-          if (date && open && high && low && close) {
-            return { date, open, high, low, close };
-          }
-
-          return null;
+          return (date && open && high && low && close) ? { date, open, high, low, close } : null;
         }).filter(Boolean);
-
       } catch (_) {
         return [];
       }
@@ -625,29 +485,19 @@ async function fetchTwseDaily(stockNo) {
   return uniqueSort(results.flat());
 }
 
-async function fetchTpexDaily(stockNo) {
-  const months = getRecentMonths(6);
+async function fetchTpexDaily(stockNo, monthCount = 7) {
+  const months = getRecentMonths(monthCount);
 
   const results = await Promise.all(
     months.map(async ym => {
       const year = ym.slice(0, 4);
       const month = ym.slice(4, 6);
-
-      const url =
-        `https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=${stockNo}&date=${year}/${month}/01&response=json`;
+      const url = `https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock?code=${stockNo}&date=${year}/${month}/01&response=json`;
 
       try {
-        const r = await fetch(url, {
-          headers: { "User-Agent": "Mozilla/5.0" }
-        });
-
+        const r = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
         const json = await r.json();
-
-        const data = Array.isArray(json.data)
-          ? json.data
-          : Array.isArray(json.tables?.[0]?.data)
-            ? json.tables[0].data
-            : [];
+        const data = Array.isArray(json.data) ? json.data : Array.isArray(json.tables?.[0]?.data) ? json.tables[0].data : [];
 
         return data.map(item => {
           const date = rocToDate(item[0]);
@@ -655,14 +505,8 @@ async function fetchTpexDaily(stockNo) {
           const high = toNumber(item[4]);
           const low = toNumber(item[5]);
           const close = toNumber(item[6]);
-
-          if (date && open && high && low && close) {
-            return { date, open, high, low, close };
-          }
-
-          return null;
+          return (date && open && high && low && close) ? { date, open, high, low, close } : null;
         }).filter(Boolean);
-
       } catch (_) {
         return [];
       }
@@ -672,18 +516,21 @@ async function fetchTpexDaily(stockNo) {
   return uniqueSort(results.flat());
 }
 
-/* ===== 穿山惡龍邏輯 ===== */
+/* ===== 計算 MA ===== */
 
-function addMA20(rows) {
+function addAllMAs(rows) {
   return rows.map((row, i) => {
-    if (i < 19) return { ...row, ma20: null };
-
-    const slice = rows.slice(i - 19, i + 1);
-    const sum = slice.reduce((acc, r) => acc + r.close, 0);
+    const calcMA = (period) => {
+      if (i < period - 1) return null;
+      const slice = rows.slice(i - (period - 1), i + 1);
+      return slice.reduce((acc, r) => acc + r.close, 0) / period;
+    };
 
     return {
       ...row,
-      ma20: sum / 20
+      ma20: calcMA(20),
+      ma60: calcMA(60),
+      ma120: calcMA(120)
     };
   });
 }
@@ -721,14 +568,12 @@ function buildWave(rows, cross) {
 
   for (let i = cross.index + 1; i < rows.length; i++) {
     const r = rows[i];
-
     if (!r.ma20) continue;
 
     if (r.close < r.ma20) {
       breakDate = r.date;
       break;
     }
-
     if (r.high > high1) {
       high1 = r.high;
     }
@@ -739,13 +584,7 @@ function buildWave(rows, cross) {
   const low1 = cross.low;
   const gainPercent = ((high1 - low1) / low1) * 100;
 
-  return {
-    crossDate: cross.date,
-    low1,
-    high1,
-    gainPercent,
-    breakDate
-  };
+  return { crossDate: cross.date, low1, high1, gainPercent, breakDate };
 }
 
 /* ===== 工具函式 ===== */
@@ -774,44 +613,25 @@ function getRecentMonths(count) {
 
 function rocToDate(str) {
   if (!str) return null;
-
   const parts = String(str).replace(/\s/g, "").split(/[./-]/);
-
   if (parts.length < 3) return null;
-
   let y = parseInt(parts[0], 10);
   const m = String(parseInt(parts[1], 10)).padStart(2, "0");
   const d = String(parseInt(parts[2], 10)).padStart(2, "0");
-
   if (y < 1911) y += 1911;
-
   return `${y}-${m}-${d}`;
 }
 
 function toNumber(v) {
   if (v === undefined || v === null) return null;
-
-  const n = Number(
-    String(v)
-      .replace(/,/g, "")
-      .replace("--", "")
-      .replace(/X|除權|除息|息|權/g, "")
-      .trim()
-  );
-
+  const n = Number(String(v).replace(/,/g, "").replace("--", "").replace(/X|除權|除息|息|權/g, "").trim());
   return Number.isFinite(n) ? n : null;
 }
 
 function uniqueSort(rows) {
   const map = new Map();
-
-  for (const r of rows) {
-    map.set(r.date, r);
-  }
-
-  return Array.from(map.values()).sort((a, b) => {
-    return new Date(a.date) - new Date(b.date);
-  });
+  for (const r of rows) map.set(r.date, r);
+  return Array.from(map.values()).sort((a, b) => new Date(a.date) - new Date(b.date));
 }
 
 function round2(n) {
