@@ -14,8 +14,8 @@ const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時股票清單快取
 const STOCK_ALIAS = {
   "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "聯電": "2303",
   "廣達": "2382", "緯創": "3231", "群創": "3481", "友達": "2409",
-  "聯鈞": "3450", "科嶠": "4542", "國精化": "4722", "前鼎": "4908",
-  "台半": "5425", "環球晶": "6488", "波若威": "3163", "聯茂": "6213"
+  "盟立": "2464", "聯鈞": "3450", "科嶠": "4542", "國精化": "4722", 
+  "前鼎": "4908", "台半": "5425", "環球晶": "6488", "波若威": "3163", "聯茂": "6213"
 };
 
 export default async function handler(req, res) {
@@ -85,28 +85,33 @@ export default async function handler(req, res) {
       });
     }
 
-    // 動態合併當日即時價
+    // 【修正重點 1】：必須在所有指標與訊號計算前，先把今日即時 K 棒精準併入 rows
     const todayStr = getTodayRocDate();
-    const lastRowDate = rows[rows.length - 1]?.date;
+    const lastRowIndex = rows.length - 1;
+    const lastRowDate = rows[lastRowIndex]?.date;
 
     if (quote.currentPrice) {
       if (lastRowDate === todayStr) {
-        const last = rows[rows.length - 1];
-        last.close = quote.currentPrice;
-        if (quote.currentPrice > last.high) last.high = quote.currentPrice;
-        if (quote.currentPrice < last.low) last.low = quote.currentPrice;
+        // 今日已有 K 棒，更新收盤、最高、最低價
+        rows[lastRowIndex].close = quote.currentPrice;
+        if (quote.dayHigh && quote.dayHigh > rows[lastRowIndex].high) rows[lastRowIndex].high = quote.dayHigh;
+        else if (quote.currentPrice > rows[lastRowIndex].high) rows[lastRowIndex].high = quote.currentPrice;
+
+        if (quote.dayLow && quote.dayLow < rows[lastRowIndex].low) rows[lastRowIndex].low = quote.dayLow;
+        else if (quote.currentPrice < rows[lastRowIndex].low) rows[lastRowIndex].low = quote.currentPrice;
       } else {
+        // 今日尚無 K 棒，推入最新即時價與當日高低價
         rows.push({
           date: todayStr,
-          open: quote.currentPrice,
-          high: quote.currentPrice,
-          low: quote.currentPrice,
+          open: quote.openPrice || quote.currentPrice,
+          high: quote.dayHigh || quote.currentPrice,
+          low: quote.dayLow || quote.currentPrice,
           close: quote.currentPrice
         });
       }
     }
 
-    // 計算 20MA, 60MA, 120MA
+    // 重新計算 20MA, 60MA, 120MA
     rows = addAllMAs(rows);
 
     const latestRow = rows[rows.length - 1];
@@ -158,6 +163,7 @@ export default async function handler(req, res) {
       });
     }
 
+    // 【修正重點 2】：最新穿惡點即為 crosses 陣列最後一個
     const latestCross = crosses[crosses.length - 1];
     const halfYearAgo = new Date();
     halfYearAgo.setMonth(halfYearAgo.getMonth() - 6);
@@ -209,7 +215,7 @@ export default async function handler(req, res) {
     // 穿山惡龍目標價公式 (含 50% 加權)
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
     
-    // Low2：精準取最近一次穿惡當天 K 棒的最低價 (cross.low)
+    // 【修正重點 3】：Low2 精準取最新一次穿惡當天 K 棒最低價 (若當天即穿惡，取當天 K 棒 low)
     const low2 = isAboveMA20 ? latestCross.low : null;
 
     const canShowTarget = isAboveMA20 && isAboveLongTermMAs;
@@ -247,7 +253,7 @@ export default async function handler(req, res) {
 
       low1: round2(low1),
       high1: round2(high1),
-      low2: canShowTarget ? round2(low2) : null,
+      low2: canShowTarget ? round2(low2) : null, // 這裡現在會正確回傳當天 K 棒低點 (如 179)
 
       target: roundedTarget,
       targetDistancePercent,
@@ -309,6 +315,10 @@ async function getRealtimeQuote(stockNo) {
     const currentPrice = parseRealtimePrice(row);
     const yesterdayClose = toNumber(row.y);
 
+    const openPrice = cleanPriceStr(row.o);
+    const dayHigh = cleanPriceStr(row.h);
+    const dayLow = cleanPriceStr(row.l);
+
     const dayChange = currentPrice && yesterdayClose ? round2(currentPrice - yesterdayClose) : null;
     const dayChangePercent = currentPrice && yesterdayClose ? round2(((currentPrice - yesterdayClose) / yesterdayClose) * 100) : null;
     const volume = toNumber(row.v);
@@ -316,6 +326,9 @@ async function getRealtimeQuote(stockNo) {
     return {
       name: String(row.n || "").trim(),
       currentPrice,
+      openPrice,
+      dayHigh,
+      dayLow,
       dayChange,
       dayChangePercent,
       volume
@@ -349,7 +362,7 @@ function cleanPriceStr(v) {
 }
 
 function emptyQuote() {
-  return { name: "", currentPrice: null, dayChange: null, dayChangePercent: null, volume: null };
+  return { name: "", currentPrice: null, openPrice: null, dayHigh: null, dayLow: null, dayChange: null, dayChangePercent: null, volume: null };
 }
 
 /* ===== 2. 股號 / 股名解析 ===== */
@@ -559,7 +572,6 @@ function addAllMAs(rows) {
   });
 }
 
-// 尋找所有「收盤價突破月線 (20MA)」的關鍵點
 function findCrosses(rows) {
   const crosses = [];
 
@@ -572,12 +584,11 @@ function findCrosses(rows) {
     const wasBelow = prev.close <= prev.ma20;
     const nowAbove = curr.close > curr.ma20;
 
-    // 前一日收盤 <= 20MA，且當日收盤 > 20MA
     if (wasBelow && nowAbove) {
       crosses.push({
         index: i,
         date: curr.date,
-        low: curr.low,   // 突破當天 K 棒最低價 (即穿惡低點)
+        low: curr.low,   // 突破當天 K 棒最低價 (這波穿惡低點 X)
         high: curr.high,
         close: curr.close,
         ma20: curr.ma20
@@ -588,9 +599,8 @@ function findCrosses(rows) {
   return crosses;
 }
 
-// 建立波段：取突破當天 K 棒最低價 low1，並尋找後續最高價 high1 直至跌破 20MA
 function buildWave(rows, cross) {
-  const low1 = cross.low; // Low1 直接取突破當天 K 棒最低價
+  const low1 = cross.low; 
   let high1 = cross.high;
   let breakDate = null;
 
