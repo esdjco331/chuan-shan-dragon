@@ -1,13 +1,29 @@
+// 快取配置
 const RESULT_CACHE = new Map();
+const MAX_CACHE_SIZE = 500;
+
 const STOCK_LIST_CACHE = {
   list: null,
   time: 0
 };
 
-const CACHE_TIME = 1000 * 5; // 5秒快取
-const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時快取
+const CACHE_TIME = 1000 * 5; // 5秒即時價快取
+const STOCK_LIST_CACHE_TIME = 1000 * 60 * 60; // 1小時股票清單快取
+
+// 常用別名設定
+const STOCK_ALIAS = {
+  "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "聯電": "2303",
+  "廣達": "2382", "緯創": "3231", "群創": "3481", "友達": "2409",
+  "聯鈞": "3450", "科嶠": "4542", "國精化": "4722", "前鼎": "4908",
+  "台半": "5425", "環球晶": "6488", "波若威": "3163", "聯茂": "6213"
+};
 
 export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+
   const input = String(req.query.stockNo || "").trim();
 
   if (!input) {
@@ -20,7 +36,7 @@ export default async function handler(req, res) {
     if (!resolved.stockNo) {
       return res.status(200).json({
         ok: false,
-        message: `查不到「${input}」對應的股號，請改用股號查詢。`
+        message: `查不到「${input}」對應的股號，請確認名稱或改用股號查詢。`
       });
     }
 
@@ -43,29 +59,13 @@ export default async function handler(req, res) {
       market = await detectMarket(stockNo);
     }
 
-    const quote = await getRealtimeQuote(stockNo);
+    const quotePromise = getRealtimeQuote(stockNo);
+    const dailyPromise = fetchDailyData(stockNo, market, 7);
 
-    let rows = [];
+    const [quote, dailyResult] = await Promise.all([quotePromise, dailyPromise]);
 
-    // 抓取 7 個月資料，足以穩定計算 120MA (半年線)，速度極快
-    if (market === "tpex") {
-      rows = await fetchTpexDaily(stockNo, 7);
-    } else if (market === "twse") {
-      rows = await fetchTwseDaily(stockNo, 7);
-    } else {
-      const [twseRows, tpexRows] = await Promise.all([
-        fetchTwseDaily(stockNo, 7),
-        fetchTpexDaily(stockNo, 7)
-      ]);
-
-      if (twseRows.length >= tpexRows.length) {
-        rows = twseRows;
-        market = "twse";
-      } else {
-        rows = tpexRows;
-        market = "tpex";
-      }
-    }
+    let rows = dailyResult.rows;
+    market = dailyResult.market || market || "twse";
 
     if (!stockName) {
       stockName = quote.name || await getStockNameByCode(stockNo);
@@ -85,7 +85,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 動態併入今日即時價
+    // 動態合併當日即時價
     const todayStr = getTodayRocDate();
     const lastRowDate = rows[rows.length - 1]?.date;
 
@@ -106,7 +106,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 計算均線 (20MA, 60MA 季線, 120MA 半年線)
+    // 計算 20MA, 60MA, 120MA
     rows = addAllMAs(rows);
 
     const latestRow = rows[rows.length - 1];
@@ -117,16 +117,13 @@ export default async function handler(req, res) {
     const currentPriceForMA = quote.currentPrice || latestRow.close;
 
     const isAboveMA20 = latestMA20 !== null && currentPriceForMA > latestMA20;
-    
-    // 濾網：需同時站上 60MA (季線) 與 120MA (半年線)
     const isAboveMA60 = latestMA60 === null || currentPriceForMA > latestMA60;
     const isAboveMA120 = latestMA120 === null || currentPriceForMA > latestMA120;
 
     const isAboveLongTermMAs = isAboveMA60 && isAboveMA120;
-
     const crosses = findCrosses(rows);
 
-    // 未站上長天期均線時的處理
+    // 濾網：未同時站在季線與半年線之上
     if (!isAboveLongTermMAs) {
       return res.status(200).json({
         ok: false,
@@ -207,14 +204,16 @@ export default async function handler(req, res) {
 
     const low1 = validWave.low1;
     const high1 = validWave.high1;
-    const gainPercent = ((high1 - low1) / low1) * 100;
-    
+    const gainPercent = validWave.gainPercent;
+
     // 穿山惡龍目標價公式 (含 50% 加權)
     const factor = ((gainPercent + 100) / 100 * 0.5) + 1;
+    
+    // Low2：精準取最近一次穿惡當天 K 棒的最低價 (cross.low)
     const low2 = isAboveMA20 ? latestCross.low : null;
 
     const canShowTarget = isAboveMA20 && isAboveLongTermMAs;
-    const roundedTarget = canShowTarget ? round2(low2 * factor) : null;
+    const roundedTarget = canShowTarget && low2 ? round2(low2 * factor) : null;
 
     const targetDistancePercent =
       canShowTarget && quote.currentPrice && roundedTarget
@@ -268,10 +267,11 @@ export default async function handler(req, res) {
       cache: false
     };
 
-    RESULT_CACHE.set(cacheKey, {
-      time: Date.now(),
-      data: result
-    });
+    if (RESULT_CACHE.size > MAX_CACHE_SIZE) {
+      const firstKey = RESULT_CACHE.keys().next().value;
+      RESULT_CACHE.delete(firstKey);
+    }
+    RESULT_CACHE.set(cacheKey, { time: Date.now(), data: result });
 
     return res.status(200).json(result);
 
@@ -283,7 +283,7 @@ export default async function handler(req, res) {
   }
 }
 
-/* ===== 即時行情解析 ===== */
+/* ===== 1. 即時行情解析 ===== */
 
 async function getRealtimeQuote(stockNo) {
   try {
@@ -293,11 +293,13 @@ async function getRealtimeQuote(stockNo) {
 
     const r = await fetch(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://mis.twse.com.tw/stock/index.jsp",
         "Cache-Control": "no-cache"
       }
     });
+
+    if (!r.ok) return emptyQuote();
 
     const json = await r.json();
     const row = json?.msgArray?.find(item => String(item.c || "").trim() === String(stockNo));
@@ -335,7 +337,7 @@ function parseRealtimePrice(row) {
   if (val !== null) return val;
   val = cleanPriceStr(row.o);
   if (val !== null) return val;
-  return null;
+  return cleanPriceStr(row.y);
 }
 
 function cleanPriceStr(v) {
@@ -350,14 +352,7 @@ function emptyQuote() {
   return { name: "", currentPrice: null, dayChange: null, dayChangePercent: null, volume: null };
 }
 
-/* ===== 股號 / 股名解析 ===== */
-
-const STOCK_ALIAS = {
-  "台積電": "2330", "鴻海": "2317", "聯發科": "2454", "聯電": "2303",
-  "廣達": "2382", "緯創": "3231", "群創": "3481", "友達": "2409",
-  "聯鈞": "3450", "科嶠": "4542", "國精化": "4722", "前鼎": "4908",
-  "台半": "5425", "環球晶": "6488", "波若威": "3163", "聯茂": "6213"
-};
+/* ===== 2. 股號 / 股名解析 ===== */
 
 async function resolveStock(input) {
   const text = normalizeText(input);
@@ -369,7 +364,8 @@ async function resolveStock(input) {
   }
 
   const list = await getStockList();
-  let found = list.find(s => normalizeText(s.name) === text) || list.find(s => normalizeText(s.name).includes(text));
+  let found = list.find(s => normalizeText(s.name) === text) ||
+              list.find(s => normalizeText(s.name).includes(text));
 
   if (!found) return { stockNo: "", stockName: "", market: "" };
 
@@ -404,11 +400,11 @@ async function getStockList() {
   }
 
   const list = [];
-  await Promise.all([fetchTwseStockList(list), fetchTpexStockList(list)]);
+  await Promise.allSettled([fetchTwseStockList(list), fetchTpexStockList(list)]);
 
   for (const [name, code] of Object.entries(STOCK_ALIAS)) {
     if (!list.some(s => s.code === code)) {
-      list.push({ code, name, market: "" });
+      list.push({ code, name, market: "twse" });
     }
   }
 
@@ -419,7 +415,9 @@ async function getStockList() {
 
 async function fetchTwseStockList(list) {
   try {
-    const r = await fetch("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", { headers: { "User-Agent": "Mozilla/5.0" } });
+    const r = await fetch("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
     const json = await r.json();
     if (!Array.isArray(json)) return;
     for (const item of json) {
@@ -432,7 +430,9 @@ async function fetchTwseStockList(list) {
 
 async function fetchTpexStockList(list) {
   try {
-    const r = await fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", { headers: { "User-Agent": "Mozilla/5.0" } });
+    const r = await fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
     const json = await r.json();
     if (!Array.isArray(json)) return;
     for (const item of json) {
@@ -455,7 +455,28 @@ function normalizeText(str) {
   return String(str || "").replace(/\s/g, "").replace("臺", "台").trim();
 }
 
-/* ===== 日K資料抓取 (7 個月) ===== */
+/* ===== 3. 日K歷史資料抓取 ===== */
+
+async function fetchDailyData(stockNo, market, monthCount = 7) {
+  if (market === "tpex") {
+    const rows = await fetchTpexDaily(stockNo, monthCount);
+    return { rows, market: "tpex" };
+  } else if (market === "twse") {
+    const rows = await fetchTwseDaily(stockNo, monthCount);
+    return { rows, market: "twse" };
+  } else {
+    const [twseRows, tpexRows] = await Promise.all([
+      fetchTwseDaily(stockNo, monthCount),
+      fetchTpexDaily(stockNo, monthCount)
+    ]);
+
+    if (twseRows.length >= tpexRows.length) {
+      return { rows: twseRows, market: "twse" };
+    } else {
+      return { rows: tpexRows, market: "tpex" };
+    }
+  }
+}
 
 async function fetchTwseDaily(stockNo, monthCount = 7) {
   const months = getRecentMonths(monthCount);
@@ -516,14 +537,17 @@ async function fetchTpexDaily(stockNo, monthCount = 7) {
   return uniqueSort(results.flat());
 }
 
-/* ===== 計算 MA ===== */
+/* ===== 4. 技術指標與穿惡訊號計算 ===== */
 
 function addAllMAs(rows) {
   return rows.map((row, i) => {
     const calcMA = (period) => {
       if (i < period - 1) return null;
-      const slice = rows.slice(i - (period - 1), i + 1);
-      return slice.reduce((acc, r) => acc + r.close, 0) / period;
+      let sum = 0;
+      for (let j = i - (period - 1); j <= i; j++) {
+        sum += rows[j].close;
+      }
+      return sum / period;
     };
 
     return {
@@ -535,6 +559,7 @@ function addAllMAs(rows) {
   });
 }
 
+// 尋找所有「收盤價突破月線 (20MA)」的關鍵點
 function findCrosses(rows) {
   const crosses = [];
 
@@ -542,16 +567,17 @@ function findCrosses(rows) {
     const prev = rows[i - 1];
     const curr = rows[i];
 
-    if (!prev.ma20 || !curr.ma20) continue;
+    if (prev.ma20 === null || curr.ma20 === null) continue;
 
     const wasBelow = prev.close <= prev.ma20;
     const nowAbove = curr.close > curr.ma20;
 
+    // 前一日收盤 <= 20MA，且當日收盤 > 20MA
     if (wasBelow && nowAbove) {
       crosses.push({
         index: i,
         date: curr.date,
-        low: curr.low,
+        low: curr.low,   // 突破當天 K 棒最低價 (即穿惡低點)
         high: curr.high,
         close: curr.close,
         ma20: curr.ma20
@@ -562,13 +588,15 @@ function findCrosses(rows) {
   return crosses;
 }
 
+// 建立波段：取突破當天 K 棒最低價 low1，並尋找後續最高價 high1 直至跌破 20MA
 function buildWave(rows, cross) {
+  const low1 = cross.low; // Low1 直接取突破當天 K 棒最低價
   let high1 = cross.high;
   let breakDate = null;
 
   for (let i = cross.index + 1; i < rows.length; i++) {
     const r = rows[i];
-    if (!r.ma20) continue;
+    if (r.ma20 === null) continue;
 
     if (r.close < r.ma20) {
       breakDate = r.date;
@@ -581,13 +609,12 @@ function buildWave(rows, cross) {
 
   if (!breakDate) return null;
 
-  const low1 = cross.low;
   const gainPercent = ((high1 - low1) / low1) * 100;
 
   return { crossDate: cross.date, low1, high1, gainPercent, breakDate };
 }
 
-/* ===== 工具函式 ===== */
+/* ===== 5. 工具函式 ===== */
 
 function getTodayRocDate() {
   const d = new Date();
